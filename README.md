@@ -59,7 +59,7 @@ place. See [`docs/DESIGN.md`](./docs/DESIGN.md) for the full target design.
   and `dist/cli.mjs`; a non-root Dockerfile and compose file ship alongside.
 - **HTTP/WS server** — health, projects, runs, events, approvals, usage,
   settings, models and a WebSocket event stream with `?since=` reconnect.
-- **201 tests** covering the jail, glob matching, command policy, plan
+- **206 tests** covering the jail, glob matching, command policy, plan
   validation, budget maths, provider mapping, settings precedence, git
   isolation and merges, cancellation, office layout and pathfinding, the
   production bundles, and an end-to-end mock run.
@@ -449,13 +449,28 @@ that already exists in the run log, so what you see is always what happened.
 | `review.started` | the QA agent walks to its desk and announces the review |
 | `run.finished` | everyone returns to idle |
 
-When nobody has a task, agents still have a life. Each one picks a deterministic
-idle activity every few seconds: resting, fidgeting, stretching, walking a lap,
-visiting the coffee machine or looking for someone to chat with. The activity is
-shown as a small line above the head, and an occasional speech bubble adds a
-one-liner ("needs caffeine", "thinking about the spec"). Behaviour is seeded per
-agent id, so the same run always looks the same in screenshots; silence is part
-of it, because constant chatter reads as noise.
+When nobody has a task, agents still have a life. Each one keeps five needs —
+focus, social, caffeine, restlessness and stress — that drift over time and rise
+faster while working. The strongest need decides what it does next, so two agents
+with the same role behave differently and the same agent does not loop on coffee:
+
+| Need | Behaviour |
+|---|---|
+| caffeine | walk to the coffee machine or the water cooler |
+| social | pair up with a colleague and talk, or head to the meeting room |
+| stress | take a smoke break by the ashtray, or stare out the window |
+| restlessness | walk a lap, stretch, fidget |
+| focus | rest at the desk, tidy it, or sketch at the whiteboard |
+
+Pair conversations are real: two idle agents walk to adjacent spots, turn towards
+each other, trade lines, and both get the social benefit before returning to
+their desks. A small line above the head always says what the agent is doing, and
+an occasional speech bubble adds a one-liner. Silence is part of it, because
+constant chatter reads as noise.
+
+Behaviour is seeded per agent id and each activity is applied to the needs, so
+the office drifts naturally instead of looping. `?debug=1` exposes needs and mood
+through `window.__corpixOffice.debugAgents()`.
 
 Implementation notes:
 

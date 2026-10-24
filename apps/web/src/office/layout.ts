@@ -55,9 +55,19 @@ export function deskFor(role: string): Desk {
 }
 
 /** Props are solid tiles that make the office feel lived in. */
-export const PROPS: Array<{ kind: "table" | "coffee" | "rack" | "plant" | "couch"; x: number; y: number; w?: number; h?: number }> = [
+export const PROPS: Array<{
+  kind: "table" | "coffee" | "rack" | "plant" | "couch" | "water" | "ashtray" | "whiteboard" | "window";
+  x: number;
+  y: number;
+  w?: number;
+  h?: number;
+}> = [
   { kind: "table", x: 3, y: 15, w: 4, h: 2 },
   { kind: "coffee", x: 24, y: 15 },
+  { kind: "water", x: 21, y: 13 },
+  { kind: "ashtray", x: 29, y: 16 },
+  { kind: "whiteboard", x: 9, y: 1, w: 3 },
+  { kind: "window", x: 26, y: 1, w: 3 },
   { kind: "rack", x: 14, y: 14 },
   { kind: "rack", x: 15, y: 14 },
   { kind: "rack", x: 16, y: 14 },
@@ -69,6 +79,10 @@ export const PROPS: Array<{ kind: "table" | "coffee" | "rack" | "plant" | "couch
 
 export const ENTRANCE: Point = { x: 18, y: 18 };
 export const BREAK_SPOT: Point = { x: 23, y: 16 };
+export const SMOKE_SPOT: Point = { x: 28, y: 15 };
+export const WATER_SPOT: Point = { x: 21, y: 14 };
+export const WHITEBOARD_SPOT: Point = { x: 11, y: 2 };
+export const WINDOW_SPOT: Point = { x: 27, y: 2 };
 export const MEETING_SPOTS: Point[] = [
   { x: 3, y: 14 },
   { x: 4, y: 14 },

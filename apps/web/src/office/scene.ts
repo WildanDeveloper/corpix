@@ -20,6 +20,10 @@ import {
   DESKS,
   ENTRANCE,
   MEETING_SPOTS,
+  SMOKE_SPOT,
+  WATER_SPOT,
+  WHITEBOARD_SPOT,
+  WINDOW_SPOT,
   PROPS,
   ROWS,
   TILE,
@@ -34,16 +38,31 @@ import {
 } from "./layout";
 import { findPath, simplifyPath } from "./pathfinding";
 import {
+  applyActivity,
+  destinationFor,
+  driftNeeds,
   hashString,
-  idleDestination,
   moodColor,
+  moodWord,
   mulberry32,
   planIdle,
+  seededNeeds,
   type IdleActivity,
+  type NeedState,
 } from "./behavior";
 import { frameTexture, type Facing, type Pose } from "./sprites";
 
-type WalkPurpose = "desk" | "coffee" | "wander" | "chat" | "home";
+type WalkPurpose =
+  | "desk"
+  | "home"
+  | "coffee"
+  | "water"
+  | "smoke"
+  | "whiteboard"
+  | "window"
+  | "meeting"
+  | "wander"
+  | "chat";
 
 const ROLE_COLORS: Record<string, number> = {
   boss: 0xffd75e,
@@ -87,6 +106,11 @@ interface OfficeAgent {
   lastIdle: IdleActivity | null;
   behaviour: IdleActivity | null;
   behaviourTimer: number;
+  needs: NeedState;
+  recentActivities: IdleActivity[];
+  chatPartner: string | null;
+  chatNextAt: number;
+  smokeTimer: number;
 }
 
 export interface SceneOptions {
@@ -103,6 +127,7 @@ export class OfficeScene {
   private readonly aliases = new Map<string, string>();
   private readonly deskScreens = new Map<string, Graphics>();
   private readonly roleNames = new Map<string, string>();
+  private readonly puffs: Array<{ gfx: Graphics; life: number; max: number; vy: number }> = [];
   private readonly reducedMotion: boolean;
   private ready = false;
   private destroyed = false;
@@ -247,15 +272,21 @@ export class OfficeScene {
     id: string;
     role: string;
     state: AgentState;
+    activity: string;
+    mood: string;
     tile: Point;
     path: number;
+    needs: NeedState;
   }> {
     return [...this.agents.entries()].map(([id, agent]) => ({
       id,
       role: agent.role,
       state: agent.state,
+      activity: agent.activity,
+      mood: moodWord(agent.needs),
       tile: { ...agent.tile },
       path: agent.path.length,
+      needs: { ...agent.needs },
     }));
   }
 
@@ -345,6 +376,11 @@ export class OfficeScene {
       lastIdle: null,
       behaviour: null,
       behaviourTimer: 0,
+      needs: seededNeeds(canonical),
+      recentActivities: [],
+      chatPartner: null,
+      chatNextAt: 0,
+      smokeTimer: 0,
     };
     this.agents.set(canonical, agent);
     this.activity(agent, "waiting for a task", 0x9fb3c8);
@@ -483,70 +519,190 @@ export class OfficeScene {
    * stay reproducible.
    */
   private driveIdle(agent: OfficeAgent, delta: number): void {
+    // Needs always drift; work raises stress and drains focus.
+    const working = agent.state === "working" || agent.state === "thinking";
+    agent.needs = driftNeeds(agent.needs, delta, working);
+
     if (agent.state !== "idle" || agent.path.length > 0) return;
 
     agent.idleFor += delta;
+
+    // Smoking is a timed state: stand outside, puff, come back.
+    if (agent.smokeTimer > 0) {
+      agent.smokeTimer -= delta;
+      if (agent.smokeTimer <= 0) {
+        agent.smokeTimer = 0;
+        this.walkTo(agent, agent.home, undefined, false, "home");
+        this.activity(agent, "heading back", 0x9fb3c8);
+      }
+      return;
+    }
+
+    // A paired conversation: both agents stay put and trade a line or two.
+    if (agent.chatPartner) {
+      if (agent.behaviourTimer > 0) {
+        agent.behaviourTimer -= delta;
+        if (agent.behaviourTimer <= 0) this.endPairChat(agent);
+        return;
+      }
+    }
+
     if (agent.behaviourTimer > 0) {
       agent.behaviourTimer -= delta;
       if (agent.behaviourTimer <= 0) {
         const finished = agent.behaviour;
         agent.behaviour = null;
-        if (finished === "coffee" || finished === "wander" || finished === "chat") {
-          this.walkTo(agent, agent.home, undefined, false, "home");
-          this.activity(agent, "heading back", 0x9fb3c8);
-        } else {
+        if (finished) {
+          agent.needs = applyActivity(agent.needs, finished);
+          this.rememberActivity(agent, finished);
+        }
+        if (agent.purpose === "home" || agent.purpose === "desk") {
           agent.pose = "sit";
           this.facingTexture(agent);
-          this.activity(agent, "waiting for a task", 0x9fb3c8);
+          this.activity(agent, "at the desk", 0x9fb3c8);
+        } else {
+          this.walkTo(agent, agent.home, undefined, false, "home");
+          this.activity(agent, "heading back", 0x9fb3c8);
         }
       }
       return;
     }
 
-    // Wait a little before the first activity so arrivals read clearly.
+    // Wait a moment after arriving so movement reads clearly.
     if (agent.idleFor < 2.5) return;
 
     agent.idleRound += 1;
-    const plan = planIdle(agent.id, agent.lastIdle, agent.idleRound);
-    agent.lastIdle = plan.activity;
+    const round = agent.idleRound;
+    const plan = planIdle(agent.id, agent.needs, round, agent.recentActivities, {
+      allowSocial: this.socialAvailable(agent),
+    });
     agent.behaviour = plan.activity;
     agent.behaviourTimer = plan.duration;
     agent.idleFor = 0;
 
-    const random = mulberry32(hashString(`${agent.id}:${agent.idleRound}:dest`));
-    const destination = idleDestination(
-      plan.activity,
+    const random = mulberry32(hashString(`${agent.id}:${round}:dest`));
+
+    // Paired chat: find a colleague who is also free and close enough.
+    if (plan.activity === "pair-chat" || plan.activity === "chat") {
+      const partner = this.findChatPartner(agent);
+      if (partner) {
+        this.startPairChat(agent, partner);
+        return;
+      }
+    }
+
+    const destination = destinationFor(
+      plan.place,
       agent.home,
-      BREAK_SPOT,
-      MEETING_SPOTS,
+      {
+        coffee: BREAK_SPOT,
+        water: WATER_SPOT,
+        smoke: SMOKE_SPOT,
+        whiteboard: WHITEBOARD_SPOT,
+        window: WINDOW_SPOT,
+        meeting: MEETING_SPOTS,
+      },
       random,
     );
 
     if (destination && isWalkable(destination.x, destination.y)) {
       const purpose: WalkPurpose =
-        plan.activity === "coffee" ? "coffee" : plan.activity === "chat" ? "chat" : "wander";
+        plan.place === "meeting"
+          ? "meeting"
+          : plan.place === "wander"
+            ? "wander"
+            : (plan.place as WalkPurpose);
       this.walkTo(agent, destination, undefined, false, purpose);
+      this.activity(agent, plan.label, 0x9fb3c8);
       if (plan.line) this.say(agent, plan.line, plan.duration);
-      this.activity(agent, plan.activity === "coffee" ? "getting coffee" : "stretching legs", 0x9fb3c8);
       return;
     }
 
-    // No travel: act in place.
-    switch (plan.activity) {
-      case "fidget":
-      case "stretch":
-        agent.pose = "idle";
-        this.facingTexture(agent);
-        this.activity(agent, plan.activity === "stretch" ? "stretching" : "fidgeting", 0x9fb3c8);
-        break;
-      case "chat":
-        this.activity(agent, "looking for someone", 0x9fb3c8);
-        break;
-      default:
-        this.activity(agent, "at the desk", 0x9fb3c8);
-        break;
-    }
+    // Act in place: face a sensible direction and show the label.
+    agent.pose = plan.activity === "desk-tidy" || plan.activity === "fidget" ? "idle" : "sit";
+    this.facingTexture(agent);
+    this.activity(agent, plan.label, 0x9fb3c8);
     if (plan.line) this.say(agent, plan.line, plan.duration);
+  }
+
+  private rememberActivity(agent: OfficeAgent, activity: IdleActivity): void {
+    agent.recentActivities = [activity, ...agent.recentActivities].slice(0, 3);
+  }
+
+  /** Social activities need at least one other idle agent. */
+  private socialAvailable(agent: OfficeAgent): boolean {
+    return [...this.agents.values()].some(
+      (other) => other.id !== agent.id && other.state === "idle" && other.path.length === 0 && !other.chatPartner,
+    );
+  }
+
+  private findChatPartner(agent: OfficeAgent): OfficeAgent | null {
+    const candidates = [...this.agents.values()].filter(
+      (other) =>
+        other.id !== agent.id &&
+        other.state === "idle" &&
+        other.path.length === 0 &&
+        !other.chatPartner &&
+        Math.abs(other.tile.x - agent.tile.x) + Math.abs(other.tile.y - agent.tile.y) <= 9,
+    );
+    if (candidates.length === 0) return null;
+    const random = mulberry32(hashString(`${agent.id}:${agent.idleRound}:partner`));
+    return candidates[Math.floor(random() * candidates.length)] ?? null;
+  }
+
+  /**
+   * Two agents turn towards each other and trade lines. The pair shares one
+   * timer, so both stop together and both get the social benefit.
+   */
+  private startPairChat(agent: OfficeAgent, partner: OfficeAgent): void {
+    const duration = 5 + Math.random() * 3;
+    agent.chatPartner = partner.id;
+    partner.chatPartner = agent.id;
+    agent.behaviour = "pair-chat";
+    partner.behaviour = "pair-chat";
+    agent.behaviourTimer = duration;
+    partner.behaviourTimer = duration;
+
+    agent.facing = partner.tile.x >= agent.tile.x ? "right" : "left";
+    partner.facing = agent.tile.x >= partner.tile.x ? "right" : "left";
+    agent.pose = "idle";
+    partner.pose = "idle";
+    this.facingTexture(agent);
+    this.facingTexture(partner);
+
+    this.activity(agent, `talking to ${partner.name}`, 0x9fb3c8);
+    this.activity(partner, `talking to ${agent.name}`, 0x9fb3c8);
+
+    const lines = [
+      "did you see the diff?",
+      "how do you mock that?",
+      "nice, that works",
+      "want a second pair of eyes?",
+      "coffee later?",
+    ];
+    const random = mulberry32(hashString(`${agent.id}:${partner.id}:chat`));
+    this.say(agent, lines[Math.floor(random() * lines.length)] ?? "hey", duration);
+    this.say(partner, lines[Math.floor(random() * lines.length)] ?? "sure", duration);
+  }
+
+  private endPairChat(agent: OfficeAgent): void {
+    const partnerId = agent.chatPartner;
+    agent.chatPartner = null;
+    agent.behaviour = null;
+    agent.behaviourTimer = 0;
+    agent.needs = applyActivity(agent.needs, "pair-chat");
+    this.rememberActivity(agent, "pair-chat");
+    this.activity(agent, "back to it", 0x9fb3c8);
+
+    const partner = partnerId ? this.agents.get(partnerId) : null;
+    if (partner) {
+      partner.chatPartner = null;
+      partner.behaviour = null;
+      partner.behaviourTimer = 0;
+      partner.needs = applyActivity(partner.needs, "pair-chat");
+      this.rememberActivity(partner, "pair-chat");
+      this.activity(partner, "back to it", 0x9fb3c8);
+    }
   }
 
   private updateDeskScreen(role: string): void {
@@ -615,6 +771,20 @@ export class OfficeScene {
 
   private update(delta: number): void {
     if (this.destroyed) return;
+
+    for (let index = this.puffs.length - 1; index >= 0; index--) {
+      const puff = this.puffs[index];
+      if (!puff) continue;
+      puff.life -= delta;
+      puff.gfx.y += puff.vy * delta;
+      puff.gfx.alpha = Math.max(0, puff.life / puff.max);
+      if (puff.life <= 0) {
+        this.app.stage.removeChild(puff.gfx);
+        puff.gfx.destroy();
+        this.puffs.splice(index, 1);
+      }
+    }
+
     for (const agent of this.agents.values()) {
       agent.clock += delta;
 
@@ -632,6 +802,7 @@ export class OfficeScene {
         this.onArrive(agent);
       }
       this.driveIdle(agent, delta);
+      if (agent.smokeTimer > 0) this.spawnSmoke(agent, delta);
 
       if (agent.state === "walking") {
         agent.frame = Math.floor(agent.clock * 8) % 4;
@@ -655,6 +826,21 @@ export class OfficeScene {
     }
   }
 
+  private spawnSmoke(agent: OfficeAgent, delta: number): void {
+    agent.smokeTimer = Math.max(0, agent.smokeTimer - delta);
+    this.smokeClock += delta;
+    if (this.smokeClock < 0.7) return;
+    this.smokeClock = 0;
+    const puff = new Graphics();
+    puff.circle(0, 0, 2 + Math.random() * 1.5).fill({ color: 0xd8d8d8, alpha: 0.7 });
+    puff.position.set(agent.root.x + 7, agent.root.y - 36);
+    puff.zIndex = 9999;
+    this.app.stage.addChild(puff);
+    this.puffs.push({ gfx: puff, life: 1.6, max: 1.6, vy: -14 });
+  }
+
+  private smokeClock = 0;
+
   /** Arrival behaviour depends on why the agent was walking. */
   private onArrive(agent: OfficeAgent): void {
     switch (agent.purpose) {
@@ -670,6 +856,52 @@ export class OfficeScene {
         this.facingTexture(agent);
         this.activity(agent, "looking for someone", 0x9fb3c8);
         return;
+      case "water":
+        agent.state = "idle";
+        agent.pose = "idle";
+        this.facingTexture(agent);
+        this.activity(agent, "at the water cooler", 0x9fb3c8);
+        return;
+      case "smoke":
+        agent.state = "idle";
+        agent.pose = "idle";
+        agent.facing = "up";
+        agent.smokeTimer = 5 + (hashString(agent.id) % 4);
+        this.facingTexture(agent);
+        this.activity(agent, "on a smoke break", 0x9fb3c8);
+        this.say(agent, "back in five", 3);
+        return;
+      case "whiteboard":
+        agent.state = "idle";
+        agent.pose = "idle";
+        this.facingTexture(agent);
+        this.activity(agent, "at the whiteboard", 0x9fb3c8);
+        return;
+      case "window":
+        agent.state = "idle";
+        agent.pose = "idle";
+        this.facingTexture(agent);
+        this.activity(agent, "staring out the window", 0x9fb3c8);
+        return;
+      case "meeting":
+        agent.state = "idle";
+        agent.pose = "sit";
+        this.facingTexture(agent);
+        this.activity(agent, "in the meeting room", 0x9fb3c8);
+        return;
+      case "chat": {
+        agent.state = "idle";
+        agent.pose = "idle";
+        const partner = agent.chatPartner ? this.agents.get(agent.chatPartner) : null;
+        if (partner) {
+          agent.facing = partner.tile.x >= agent.tile.x ? "right" : "left";
+          this.facingTexture(agent);
+          this.activity(agent, `talking to ${partner.name}`, 0x9fb3c8);
+        } else {
+          this.facingTexture(agent);
+        }
+        return;
+      }
       case "wander":
         agent.state = "idle";
         agent.pose = "idle";
@@ -888,6 +1120,60 @@ export class OfficeScene {
             .fill(0x36414d)
             .rect(x + 4, y + 10, (prop.w ?? 1) * TILE - 8, 8)
             .fill(0x44525f);
+          break;
+        case "water":
+          art
+            .rect(x + 10, y + 14, 12, 18)
+            .fill(0x2f3d4a)
+            .rect(x + 12, y + 16, 8, 8)
+            .fill(0x7fc8e8)
+            .rect(x + 13, y + 26, 6, 3)
+            .fill(0x1c252e)
+            .rect(x + 14, y + 8, 4, 6)
+            .fill(0x8fd8f0);
+          break;
+        case "ashtray":
+          art
+            .rect(x + 8, y + 20, 16, 8)
+            .fill(0x3a3a40)
+            .rect(x + 10, y + 18, 2, 4)
+            .fill(0xe8e2d4)
+            .rect(x + 16, y + 17, 2, 5)
+            .fill(0xe8e2d4)
+            .rect(x + 10, y + 16, 2, 2)
+            .fill(0xff8a5c)
+            .rect(x + 16, y + 15, 2, 2)
+            .fill(0xff8a5c);
+          break;
+        case "whiteboard":
+          art
+            .rect(x + 2, y + 8, (prop.w ?? 1) * TILE - 4, 20)
+            .fill(0xe8edf2)
+            .rect(x + 2, y + 8, (prop.w ?? 1) * TILE - 4, 2)
+            .fill(0xb8c4d0)
+            .rect(x + 8, y + 14, 26, 1)
+            .fill(0x3f7fd0)
+            .rect(x + 8, y + 18, 18, 1)
+            .fill(0x3f9e6b)
+            .rect(x + 8, y + 22, 22, 1)
+            .fill(0xd07a3f)
+            .rect(x + 30, y + 24, 4, 2)
+            .fill(0x9b5fc0);
+          break;
+        case "window":
+          art
+            .rect(x + 2, y + 6, (prop.w ?? 1) * TILE - 4, 22)
+            .fill(0x1b2b3a)
+            .rect(x + 4, y + 8, (prop.w ?? 1) * TILE - 8, 18)
+            .fill(0x24405a)
+            .rect(x + 4, y + 12, 10, 1)
+            .fill(0x2f5573)
+            .rect(x + 20, y + 16, 12, 1)
+            .fill(0x2f5573)
+            .rect(x + 4, y + 20, 8, 1)
+            .fill(0x2f5573)
+            .circle(x + 26, y + 12, 3)
+            .fill(0xffd75e);
           break;
       }
       art.zIndex = y + TILE * 0.9;
