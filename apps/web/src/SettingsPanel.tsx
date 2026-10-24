@@ -8,6 +8,7 @@ import type {
   ProviderSettings,
   RoleOverride,
   RolesView,
+  SandboxInfo,
   SettingsView,
 } from "./types";
 
@@ -32,17 +33,20 @@ export function SettingsPanel(): ReactElement {
   });
   const [busy, setBusy] = useState(false);
   const [probe, setProbe] = useState<ProbeResult | null>(null);
+  const [sandboxes, setSandboxes] = useState<SandboxInfo[]>([]);
 
   const load = useCallback(async () => {
-    const [settingsView, rolesView, modelList] = await Promise.all([
+    const [settingsView, rolesView, modelList, sandboxList] = await Promise.all([
       api<SettingsView>("/api/settings"),
       api<RolesView>("/api/roles"),
       api<{ models: string[] }>("/api/models").catch(() => ({ models: [] })),
+      api<{ available: SandboxInfo[] }>("/api/sandbox").catch(() => ({ available: [] })),
     ]);
     setView(settingsView);
     setDraft(settingsView.settings);
     setRoles(rolesView);
     setModels(modelList.models);
+    setSandboxes(sandboxList.available);
   }, []);
 
   useEffect(() => {
@@ -474,12 +478,32 @@ export function SettingsPanel(): ReactElement {
           <select
             value={draft.safety.sandbox}
             disabled={isLocked(locked, "safety.sandbox")}
-            onChange={(event) => update("safety", { sandbox: event.target.value as "none" | "docker" })}
+            onChange={(event) =>
+              update("safety", {
+                sandbox: event.target.value as "none" | "bwrap" | "docker",
+              })
+            }
           >
-            <option value="none">none</option>
-            <option value="docker">docker (planned)</option>
+            <option value="none">none — policy and jail only</option>
+            <option value="bwrap">bubblewrap — no daemon needed (recommended)</option>
+            <option value="docker">docker — container per command</option>
           </select>
         </label>
+        {sandboxes.length > 0 && (
+          <ul className="muted sandbox-list">
+            {sandboxes.map((entry) => (
+              <li key={entry.kind}>
+                <code>{entry.kind}</code>{" "}
+                {entry.available ? (
+                  <span className="ok">available</span>
+                ) : (
+                  <span className="warn">unavailable</span>
+                )}{" "}
+                — {entry.detail}
+              </li>
+            ))}
+          </ul>
+        )}
         {locked.length > 0 && (
           <p className="muted">
             Pinned by environment variables: <code>{locked.join(", ")}</code>

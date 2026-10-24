@@ -27,6 +27,7 @@ export const EventTypeSchema = z.enum([
   "git.conflict",
   "review.started",
   "review.finished",
+  "sandbox.ready",
   "usage.updated",
   "error",
 ]);

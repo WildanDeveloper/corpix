@@ -33,6 +33,13 @@ import { WorkspaceJail } from "../tools/workspace";
 import type { Store, TaskRecord } from "../store/types";
 import type { TeamMember } from "../roles/loader";
 import {
+  buildSandboxCommand,
+  describeSandbox,
+  detectSandboxes,
+  gitDirsFor,
+  type SandboxKind,
+} from "../sandbox";
+import {
   REVIEW_SCHEMA_DESCRIPTION,
   buildFixInstructions,
   fixTasksFor,
@@ -107,6 +114,7 @@ export class Orchestrator {
   private integrationJail?: WorkspaceJail;
   private git?: GitWorkspace;
   private worktrees = false;
+  private sandboxKind: SandboxKind = "none";
   private gitQueue: Promise<unknown> = Promise.resolve();
   private budget!: BudgetGuard;
   private mailbox = new Map<string, string[]>();
@@ -251,6 +259,7 @@ export class Orchestrator {
     });
 
     try {
+      await this.prepareSandbox();
       await this.prepareGit();
       const plan = await this.plan(runId, goal);
       const { tasks, planByTaskId } = this.persistPlan(runId, plan);
@@ -345,6 +354,40 @@ export class Orchestrator {
    * Set up the integration branch and per-task worktrees. Falls back to the
    * shared workspace when git is disabled or the target is not a repository.
    */
+  /**
+   * Pick the sandbox for this run. An unavailable sandbox degrades to "none"
+   * with a warning instead of failing the run, so a laptop without bubblewrap
+   * still works.
+   */
+  private async prepareSandbox(): Promise<void> {
+    const requested = this.options.runtime?.settings.safety.sandbox ?? "none";
+    if (requested === "none") {
+      this.sandboxKind = "none";
+      return;
+    }
+    const available = await detectSandboxes();
+    const entry = available.find((item) => item.kind === requested);
+    if (entry?.available) {
+      this.sandboxKind = requested;
+      this.emit({
+        type: "sandbox.ready",
+        payload: { kind: requested, detail: describeSandbox(requested) },
+      });
+      return;
+    }
+    this.sandboxKind = "none";
+    this.log(
+      `Sandbox "${requested}" is unavailable (${entry?.detail ?? "unknown"}), running without isolation.`,
+    );
+    this.emit({
+      type: "error",
+      payload: {
+        message: `Sandbox "${requested}" unavailable: ${entry?.detail ?? "unknown"}. Commands ran with policy and jail only.`,
+        code: "sandbox_unavailable",
+      },
+    });
+  }
+
   private async prepareGit(): Promise<void> {
     const config = this.options.runtime?.settings.git;
     if (config && !config.enabled) {
@@ -1326,10 +1369,21 @@ export class Orchestrator {
     const timeoutMs = this.limits.commandTimeoutMs;
     const outer = this.options.signal;
 
+    // Wrap the command in the configured sandbox. A network command only gets
+    // network access after the approval gate has allowed it.
+    const sandboxed = await buildSandboxCommand(this.sandboxKind, {
+      workspaceRoot: cwd,
+      command,
+      args,
+      env: scrubbedEnv(),
+      allowNetwork: decision.risk === "network",
+      gitDirs: this.sandboxKind === "bwrap" ? await gitDirsFor(cwd) : undefined,
+    });
+
     return await new Promise<CommandOutcome>((resolve) => {
-      const child = spawn(command, args, {
-        cwd,
-        env: scrubbedEnv(),
+      const child = spawn(sandboxed.command, sandboxed.args, {
+        cwd: sandboxed.command === "bwrap" ? undefined : cwd,
+        env: sandboxed.env,
         shell: false,
         stdio: ["ignore", "pipe", "pipe"],
         // New process group, so kill(-pid) reaches grandchildren too.

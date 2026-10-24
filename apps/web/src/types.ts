@@ -38,7 +38,13 @@ export interface LimitSettings {
 
 export interface SafetySettings {
   approvalMode: ApprovalMode;
-  sandbox: "none" | "docker";
+  sandbox: "none" | "bwrap" | "docker";
+}
+
+export interface SandboxInfo {
+  kind: "none" | "bwrap" | "docker";
+  available: boolean;
+  detail: string;
 }
 
 export interface GitSettings {

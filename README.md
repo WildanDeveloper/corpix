@@ -35,18 +35,21 @@ design lives in [`docs/DESIGN.md`](./docs/DESIGN.md).
   editable from the web UI, the API or the CLI. No restart needed.
 - **Web UI (first pass)** — a dispatch/activity/approvals view and a full
   settings panel, built with React + Vite. The pixel-art office is still to come.
+- **Command sandboxing** — `SANDBOX=bwrap` runs each command in a private mount
+  and network namespace (no daemon needed), with only the worktree writable and a
+  non-root uid; `docker` is supported when the daemon is available. A missing
+  sandbox degrades to policy-and-jail with a visible warning.
 - **Safety primitives** — workspace jail (`realpath` + trailing separator),
   protected files, write scopes, command policy, scrubbed child environment.
 - **CLI** — `run`, `runs`, `replay`, `team`, `settings`, `pricing`, `migrate`.
 - **HTTP/WS server** — health, projects, runs, events, approvals, usage,
   settings, models and a WebSocket event stream with `?since=` reconnect.
-- **145 tests** covering the jail, glob matching, command policy, plan
+- **156 tests** covering the jail, glob matching, command policy, plan
   validation, budget maths, provider mapping, settings precedence, git
   isolation and merges, cancellation, and an end-to-end mock run.
 
-Not implemented yet: QA review rounds with fix tasks, Docker sandbox, prompt
-caching, resume after a crash, the pixel-art office, and a production packaging
-step.
+Not implemented yet: prompt caching, resume after a crash, the pixel-art office,
+and a production packaging step.
 
 ## Quick start
 
@@ -109,7 +112,7 @@ Settings tab, `PATCH /api/settings`, or the CLI — no `.env` editing, no restar
 | Models | Boss / worker / cheap model ids |
 | Per-agent | model, max steps, **context tokens** and temperature for any role, overriding the tier default |
 | Limits | concurrency, steps per task, **context tokens per agent**, task timeout, tool output cap, max output tokens, **QA review rounds**, budget per goal, budget action |
-| Safety | approval mode, sandbox |
+| Safety | approval mode, command sandbox (none / bwrap / docker) |
 | Git | worktree isolation on/off, integration branch name, worktrees directory |
 | Pricing | USD per million input/output/cached tokens per model |
 
@@ -174,6 +177,7 @@ Example patch:
 | `pnpm cli settings set a.b=value` | Change settings from the terminal |
 | `pnpm cli settings key <key>` | Store the API key outside the database |
 | `pnpm cli settings test` | Probe the provider |
+| `pnpm cli sandbox` | Show which command sandboxes are available |
 | `pnpm test` | Run the test suite |
 | `pnpm typecheck` | `tsc --noEmit` |
 | `pnpm dev` | Server and Vite UI together |
@@ -205,6 +209,43 @@ check.
 Cost control: review is a normal agent run, so it consumes tokens. Set
 `limits.reviewRounds=0` for cheap exploratory runs, or give the `qa` role a
 cheaper model via `models.roles.qa.model`.
+
+## Command sandboxing
+
+Agent commands are the riskiest part of the system, so they can run inside a
+sandbox instead of trusting the policy alone.
+
+| `SANDBOX` | What it does | Needs |
+|---|---|---|
+| `none` | command policy + workspace jail only | nothing |
+| `bwrap` | bubblewrap: private mount, PID and network namespace, non-root uid, only the worktree writable | `bwrap` installed and namespaces permitted |
+| `docker` | one container per command, worktree mounted at `/work`, `--cap-drop ALL`, `no-new-privileges`, memory/CPU/pids limits | a running Docker daemon |
+
+**Why bubblewrap first:** it needs no daemon and no image, so it works on a
+normal Linux laptop and in CI. Inside the sandbox:
+
+- the worktree is the only writable path, mounted at `/work`;
+- the rest of the filesystem is read-only, so `/root`, `/home` and other
+  projects are invisible;
+- the network namespace is empty unless the command was approved as `network`
+  (installs), so a prompt-injected `curl | sh` cannot reach the internet;
+- the process runs as uid 1000, not root;
+- the git directories a worktree points at are mounted so `git status`,
+  `git diff` and `git log` keep working.
+
+Check what your machine supports:
+
+```bash
+pnpm cli sandbox
+# none    available    no isolation (policy and jail only)
+# bwrap   available    bubblewrap 0.12.0
+# docker  unavailable  docker is not installed
+```
+
+The Settings page shows the same list and disables the option when it is not
+available. If the configured sandbox cannot start, the run logs
+`sandbox_unavailable` and continues with policy and jail only — it never fails
+silently.
 
 ## Git isolation (how your repo stays safe)
 

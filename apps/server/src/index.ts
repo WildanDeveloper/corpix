@@ -7,6 +7,7 @@ import {
   approvalDecider,
   capTeamSteps,
   createProviderFromSettings,
+  detectSandboxes,
   envForRoles,
   loadTeam,
   listModels,
@@ -156,6 +157,10 @@ app.post("/api/settings/test", (req, res) => {
 app.delete("/api/settings/api-key", (_req, res) => {
   const runtime = settingsService.setApiKey("");
   res.json(maskSettings(runtime));
+});
+
+app.get("/api/sandbox", (_req, res) => {
+  void detectSandboxes().then((available) => res.json({ available }));
 });
 
 /** Model list for the settings dropdown. Never spends tokens. */

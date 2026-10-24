@@ -223,6 +223,22 @@ table.grid input {
   border-color: var(--warn);
 }
 
+.sandbox-list {
+  list-style: none;
+  padding: 0;
+  margin: 6px 0 0;
+  display: grid;
+  gap: 3px;
+}
+
+.sandbox-list .ok {
+  color: var(--ok);
+}
+
+.sandbox-list .warn {
+  color: var(--warn);
+}
+
 .status {
   border-radius: 6px;
   padding: 8px 10px;

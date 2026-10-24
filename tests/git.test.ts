@@ -171,6 +171,22 @@ describe("GitWorkspace", () => {
     ).rejects.toThrow(/must be outside the repository/);
   });
 
+  it("exposes the git dirs a worktree needs for sandboxing", async () => {
+    const { gitDirsFor } = await import("@corpix/agents");
+    const repository = await makeRepo();
+    expect(await gitDirsFor(repository)).toEqual([]);
+
+    const worktree = path.join(os.tmpdir(), `corpix-wt-${Date.now()}`);
+    created.push(worktree);
+    await git(repository, ["worktree", "add", "-q", "-b", "wt", worktree, "main"]);
+
+    const dirs = await gitDirsFor(worktree);
+    expect(dirs.length).toBeGreaterThan(0);
+    for (const dir of dirs) {
+      await expect(fs.access(dir)).resolves.toBeUndefined();
+    }
+  });
+
   it("detects a dirty working tree", async () => {
     const repo = await makeRepo();
     const workspace = await GitWorkspace.open(repo);

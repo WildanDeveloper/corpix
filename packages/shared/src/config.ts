@@ -64,7 +64,7 @@ export const EnvSchema = z.object({
   BUDGET_USD_PER_GOAL: z.coerce.number().nonnegative().default(5),
   BUDGET_ACTION: z.enum(BUDGET_ACTIONS).default("pause"),
   APPROVAL_MODE: z.enum(APPROVAL_MODES).default("ask"),
-  SANDBOX: z.enum(["none", "docker"]).default("none"),
+  SANDBOX: z.enum(["none", "bwrap", "docker"]).default("bwrap"),
   SANDBOX_IMAGE: z.string().default("node:22-bookworm-slim"),
   HOST: z.string().default("127.0.0.1"),
   PORT: z.coerce.number().int().positive().default(3001),

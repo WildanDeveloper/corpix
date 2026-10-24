@@ -49,7 +49,7 @@ export type LimitSettings = z.infer<typeof LimitSettingsSchema>;
 
 export const SafetySettingsSchema = z.object({
   approvalMode: z.enum(APPROVAL_MODES).default("ask"),
-  sandbox: z.enum(["none", "docker"]).default("none"),
+  sandbox: z.enum(["none", "bwrap", "docker"]).default("none"),
 });
 export type SafetySettings = z.infer<typeof SafetySettingsSchema>;
 
@@ -139,7 +139,7 @@ export function settingsFromEnv(env: {
   BUDGET_USD_PER_GOAL: number;
   BUDGET_ACTION: "pause" | "stop";
   APPROVAL_MODE: "ask" | "auto-safe" | "auto";
-  SANDBOX: "none" | "docker";
+  SANDBOX: "none" | "bwrap" | "docker";
 }): AppSettings {
   return AppSettingsSchema.parse({
     provider: {
@@ -367,7 +367,7 @@ export function resolveSettings(
   }
   const sandbox = env.SANDBOX;
   if (
-    (sandbox === "none" || sandbox === "docker") &&
+    (sandbox === "none" || sandbox === "bwrap" || sandbox === "docker") &&
     isPinned(pins, "SANDBOX", "safety.sandbox")
   ) {
     settings.safety.sandbox = sandbox;

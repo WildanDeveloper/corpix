@@ -3,6 +3,7 @@ import {
   SettingsService,
   applyRoleOverrides,
   capTeamSteps,
+  detectSandboxes,
   envForRoles,
   loadTeam,
   probeProvider,
@@ -40,6 +41,8 @@ async function main(): Promise<number> {
       return showPricing(configDir);
     case "settings":
       return settingsCommand(rest, env);
+    case "sandbox":
+      return showSandbox();
     case "migrate":
       return migrate(env);
     case "help":
@@ -264,6 +267,15 @@ function coerce(raw: string): unknown {
   return raw;
 }
 
+async function showSandbox(): Promise<number> {
+  const available = await detectSandboxes();
+  for (const entry of available) {
+    const mark = entry.available ? "available" : "unavailable";
+    process.stdout.write(`${entry.kind.padEnd(7)} ${mark.padEnd(12)} ${entry.detail}\n`);
+  }
+  return 0;
+}
+
 function migrate(env: ReturnType<typeof parseEnv>): number {
   const store = openStore(env);
   process.stdout.write(`Migrated ${path.join(resolveDataDir(env.DATA_DIR, repoRoot), "corpix.sqlite")}\n`);
@@ -286,6 +298,7 @@ function printHelp(): void {
       "  pnpm cli settings set models.roles.qa.model=gpt-4o-mini",
       "  pnpm cli settings key <key>   Store the API key (data/secrets.json, mode 600)",
       "  pnpm cli settings test        Probe the provider",
+      "  pnpm cli sandbox              Show available command sandboxes",
       "  pnpm cli migrate              Create or migrate the SQLite database",
       "",
     ].join("\n"),
