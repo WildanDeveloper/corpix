@@ -210,8 +210,7 @@ export class Orchestrator {
     });
   }
 
-  async run(goal: string): Promise<RunOutcome> {
-    const runId = this.options.runId ?? newRunId();
+  async run(goal: string): Promise<RunOutcome> {    const runId = this.options.runId ?? newRunId();
     this.currentRunId = runId;
     const budgetUsd = this.options.budgetUsd ?? this.defaultBudgetUsd;
     const startedAt = new Date().toISOString();
@@ -264,101 +263,13 @@ export class Orchestrator {
       const plan = await this.plan(runId, goal);
       const { tasks, planByTaskId } = this.persistPlan(runId, plan);
       const executed = await this.execute(runId, tasks, planByTaskId);
-      const reviewOutcome = await this.review(
-        runId,
-        goal,
-        executed.map((task) => this.store.getTask(task.id) ?? task),
-      );
-      const finished = reviewOutcome.tasks.map((task) => this.store.getTask(task.id) ?? task);
-      await this.releaseIntegrationWorktree();
-      const summary = summarise(goal, finished, this.git?.integrationBranch);
-      const paused = this.budget.isPaused || this.budget.isStopped;
-      // A blocked task means the goal was not achieved, so the run is not
-      // "completed" just because nothing crashed. Review tasks are a verdict,
-      // not deliverable work, so they are excluded from the completion check.
-      const deliverable = finished.filter((task) => !isReviewTask(task));
-      const allDone = deliverable.every((task) => task.status === "done");
-      const reviewBlocked = reviewOutcome.reviewed && !reviewOutcome.approved;
-      const status: RunStatus = paused
-        ? "paused"
-        : allDone && !reviewBlocked
-          ? "completed"
-          : "failed";
-
-      this.store.updateRun(runId, {
-        status,
-        summary,
-        finishedAt: new Date().toISOString(),
-        spentUsd: this.budget.spentUsd,
-      });
-      this.emit({
-        type: paused ? "run.paused" : status === "completed" ? "run.finished" : "run.failed",
-        payload: {
-          status,
-          summary,
-          spentUsd: this.budget.spentUsd,
-          review: {
-            ran: reviewOutcome.reviewed,
-            rounds: reviewOutcome.rounds,
-            approved: reviewOutcome.approved,
-          },
-          tasks: {
-            total: deliverable.length,
-            done: deliverable.filter((task) => task.status === "done").length,
-            failed: deliverable.filter((task) => task.status !== "done").length,
-          },
-        },
-      });
-
-      return {
-        runId,
-        status,
-        summary,
-        spentUsd: this.budget.spentUsd,
-        tasks: finished,
-        reviewRounds: reviewOutcome.rounds,
-        reviewed: reviewOutcome.reviewed,
-      };
+      const reviewOutcome = await this.review(runId, goal, executed);
+      return await this.finish(runId, goal, reviewOutcome.tasks, reviewOutcome);
     } catch (error) {
-      await this.releaseIntegrationWorktree().catch(() => undefined);
-      const cancelled = error instanceof CancelledError;
-      const status: RunStatus = cancelled ? "cancelled" : "failed";
-      const message = cancelled ? "Run cancelled" : (error as Error).message;
-      this.store.updateRun(runId, {
-        status,
-        summary: message,
-        finishedAt: new Date().toISOString(),
-        spentUsd: this.budget.spentUsd,
-      });
-      this.emit({
-        type: cancelled ? "run.cancelled" : "run.failed",
-        payload: { status, summary: message, spentUsd: this.budget.spentUsd },
-      });
-      if (cancelled) {
-        return {
-          runId,
-          status,
-          summary: message,
-          spentUsd: this.budget.spentUsd,
-          tasks: this.store.listTasks(runId),
-          reviewRounds: 0,
-          reviewed: false,
-        };
-      }
-      throw error;
+      return await this.fail(runId, error);
     }
   }
 
-  /** Boss plans; the plan is validated and retried on failure. */
-  /**
-   * Set up the integration branch and per-task worktrees. Falls back to the
-   * shared workspace when git is disabled or the target is not a repository.
-   */
-  /**
-   * Pick the sandbox for this run. An unavailable sandbox degrades to "none"
-   * with a warning instead of failing the run, so a laptop without bubblewrap
-   * still works.
-   */
   private async prepareSandbox(): Promise<void> {
     const requested = this.options.runtime?.settings.safety.sandbox ?? "none";
     if (requested === "none") {
@@ -595,7 +506,8 @@ export class Orchestrator {
     round: number,
     maxRounds: number,
     tasks: TaskRecord[],
-  ): Promise<{ verdict: ReviewVerdict; task: TaskRecord }> {    const agentId = newAgentId(reviewer.role.id);
+  ): Promise<{ verdict: ReviewVerdict; task: TaskRecord }> {
+    const agentId = newAgentId(reviewer.role.id);
     const model = reviewer.role.model;
     this.store.createAgent({
       id: agentId,
@@ -1020,6 +932,197 @@ export class Orchestrator {
     return { tasks, planByTaskId };
   }
 
+  /**
+   * Continue an interrupted or paused run. Finished tasks are never redone, and
+   * already-merged branches are detected so the integration branch is not
+   * merged twice.
+   */
+  async resume(goal: string): Promise<RunOutcome> {
+    const runId = this.options.runId;
+    if (!runId) throw new Error("resume() needs the run id of the run to continue");
+    const record = this.store.getRun(runId);
+    if (!record) throw new Error(`Unknown run: ${runId}`);
+    if (record.status === "completed") {
+      throw new Error(`Run ${runId} is already completed`);
+    }
+
+    this.currentRunId = runId;
+    this.baseJail = await WorkspaceJail.open(this.workspacePath);
+    this.budget = new BudgetGuard({
+      budgetUsd: this.options.budgetUsd ?? record.budgetUsd,
+      action: this.options.runtime?.settings.limits.budgetAction ?? "pause",
+      pricing: this.pricing,
+      // Spend already recorded must count against the cap after a resume.
+      initialSpentUsd: record.spentUsd,
+      onRecord: (usage) => {
+        this.store.recordUsage({
+          runId,
+          taskId: usage.taskId,
+          agentId: usage.agentId,
+          model: usage.model,
+          usage: usage.usage,
+          costUsd: usage.costUsd,
+          ts: usage.ts,
+        });
+        this.store.updateRun(runId, { spentUsd: this.budget.spentUsd });
+      },
+    });
+
+    this.emit({
+      type: "run.resumed",
+      payload: {
+        goal,
+        spentUsd: record.spentUsd,
+        budgetUsd: this.budget.budgetUsd,
+        previousStatus: record.status,
+      },
+    });
+
+    try {
+      await this.prepareSandbox();
+      await this.prepareGit();
+      await this.recoverMergedBranches(runId);
+
+      const existing = this.store.listTasks(runId);
+      // Old review tasks are verdicts, not deliverables; do not rerun them.
+      for (const task of existing) {
+        if (isReviewTask(task) && task.status !== "done") {
+          this.store.updateTask(task.id, { status: "cancelled" });
+        }
+      }
+      const deliverable = existing.filter((task) => !isReviewTask(task));
+      const plan = record.plan ?? (await this.plan(runId, goal));
+      const planByTaskId = this.rebuildPlanMap(plan, deliverable);
+      this.store.updateRun(runId, { status: "running", plan });
+
+      const executed = await this.execute(runId, deliverable, planByTaskId);
+      const reviewOutcome = await this.review(runId, goal, executed);
+      return await this.finish(runId, goal, reviewOutcome.tasks, reviewOutcome);
+    } catch (error) {
+      return await this.fail(runId, error);
+    }
+  }
+
+  /**
+   * Tasks whose branch is already contained in the integration branch were
+   * merged before the interruption; mark them done so they are not rerun.
+   */
+  private async recoverMergedBranches(runId: string): Promise<void> {
+    if (!this.git) return;
+    const git = this.git;
+    for (const task of this.store.listTasks(runId)) {
+      if (task.status === "done" || !task.branch) continue;
+      const merged = await this.serialiseGit(() => git.isMerged(task.branch!)).catch(() => false);
+      if (!merged) continue;
+      this.store.updateTask(task.id, {
+        status: "done",
+        finishedAt: task.finishedAt ?? new Date().toISOString(),
+      });
+      this.log(`Recovered ${task.role} task ${task.id}: its branch was already merged.`);
+    }
+  }
+
+  /** Re-attach plan instructions to the persisted tasks after a resume. */
+  private rebuildPlanMap(
+    plan: Plan,
+    tasks: TaskRecord[],
+  ): Map<string, Plan["tasks"][number]> {
+    const map = new Map<string, Plan["tasks"][number]>();
+    for (const task of tasks) {
+      const planTask =
+        plan.tasks.find((entry) => entry.role === task.role && entry.title === task.title) ??
+        plan.tasks.find((entry) => entry.role === task.role);
+      if (planTask) map.set(task.id, { ...planTask, title: task.title });
+    }
+    return map;
+  }
+
+  /** Shared completion path for run() and resume(). */
+  private async finish(
+    runId: string,
+    goal: string,
+    tasks: TaskRecord[],
+    reviewOutcome: { rounds: number; reviewed: boolean; approved: boolean },
+  ): Promise<RunOutcome> {
+    const finished = tasks.map((task) => this.store.getTask(task.id) ?? task);
+    await this.releaseIntegrationWorktree();
+    const summary = summarise(goal, finished, this.git?.integrationBranch);
+    const paused = this.budget.isPaused || this.budget.isStopped;
+    const deliverable = finished.filter((task) => !isReviewTask(task));
+    const allDone = deliverable.every((task) => task.status === "done");
+    const reviewBlocked = reviewOutcome.reviewed && !reviewOutcome.approved;
+    const status: RunStatus = paused
+      ? "paused"
+      : allDone && !reviewBlocked
+        ? "completed"
+        : "failed";
+
+    this.store.updateRun(runId, {
+      status,
+      summary,
+      finishedAt: new Date().toISOString(),
+      spentUsd: this.budget.spentUsd,
+    });
+    this.emit({
+      type: paused ? "run.paused" : status === "completed" ? "run.finished" : "run.failed",
+      payload: {
+        status,
+        summary,
+        spentUsd: this.budget.spentUsd,
+        review: {
+          ran: reviewOutcome.reviewed,
+          rounds: reviewOutcome.rounds,
+          approved: reviewOutcome.approved,
+        },
+        tasks: {
+          total: deliverable.length,
+          done: deliverable.filter((task) => task.status === "done").length,
+          failed: deliverable.filter((task) => task.status !== "done").length,
+        },
+      },
+    });
+
+    return {
+      runId,
+      status,
+      summary,
+      spentUsd: this.budget.spentUsd,
+      tasks: finished,
+      reviewRounds: reviewOutcome.rounds,
+      reviewed: reviewOutcome.reviewed,
+    };
+  }
+
+  /** Shared failure path for run() and resume(). */
+  private async fail(runId: string, error: unknown): Promise<RunOutcome> {
+    await this.releaseIntegrationWorktree().catch(() => undefined);
+    const cancelled = error instanceof CancelledError;
+    const status: RunStatus = cancelled ? "cancelled" : "failed";
+    const message = cancelled ? "Run cancelled" : (error as Error).message;
+    this.store.updateRun(runId, {
+      status,
+      summary: message,
+      finishedAt: new Date().toISOString(),
+      spentUsd: this.budget.spentUsd,
+    });
+    this.emit({
+      type: cancelled ? "run.cancelled" : "run.failed",
+      payload: { status, summary: message, spentUsd: this.budget.spentUsd },
+    });
+    if (cancelled) {
+      return {
+        runId,
+        status,
+        summary: message,
+        spentUsd: this.budget.spentUsd,
+        tasks: this.store.listTasks(runId),
+        reviewRounds: 0,
+        reviewed: false,
+      };
+    }
+    throw error;
+  }
+
   /** Dependency-graph scheduler with a concurrency limit. */
   private async execute(
     runId: string,
@@ -1030,6 +1133,11 @@ export class Orchestrator {
     const completed = new Set<string>();
     const running = new Map<string, Promise<void>>();
     const failed = new Set<string>();
+
+    // A resumed run may already have finished tasks; never redo them.
+    for (const task of tasks) {
+      if (task.status === "done") completed.add(task.id);
+    }
 
     while (completed.size + failed.size < tasks.length) {
       // Mark tasks whose dependency failed before computing what is ready.
@@ -1077,6 +1185,8 @@ export class Orchestrator {
       for (const task of ready) {
         if (running.size >= this.limits.maxConcurrentAgents) break;
         if (failed.has(task.id) || completed.has(task.id)) continue;
+        // A task that was interrupted mid-flight has no branch yet, so its
+        // worktree is recreated; the previous attempt left no commit.
         const promise = this.runTask(runId, task, planByTaskId)
           .then((ok) => {
             if (ok) completed.add(task.id);

@@ -82,6 +82,15 @@ export class GitWorkspace {
     return status.stdout.trim().length === 0;
   }
 
+  /** True when `branch` is already contained in the integration branch. */
+  async isMerged(branch: string): Promise<boolean> {
+    if (!(await this.branchExists(branch))) return false;
+    const result = await this.git(["merge-base", "--is-ancestor", branch, this.integrationBranch])
+      .then(() => true)
+      .catch(() => false);
+    return result;
+  }
+
   /** Attach (or reuse) the worktree that holds the integration branch. */
   async ensureIntegrationWorktree(): Promise<string> {
     const integrationPath = path.join(this.worktreesRoot, ".integration");

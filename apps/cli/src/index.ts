@@ -35,6 +35,8 @@ async function main(): Promise<number> {
       return listRuns(env);
     case "replay":
       return replay(rest[0], env);
+    case "resume":
+      return await resumeCommand(rest, env);
     case "team":
       return showTeam(configDir, env);
     case "pricing":
@@ -89,6 +91,48 @@ async function runCommand(args: string[], env: ReturnType<typeof parseEnv>): Pro
       approval: approval as "ask" | "auto-safe" | "auto" | undefined,
       team,
       quiet,
+    },
+    env,
+  );
+}
+
+async function resumeCommand(
+  args: string[],
+  env: ReturnType<typeof parseEnv>,
+): Promise<number> {
+  const runId = args[0];
+  if (!runId) {
+    process.stderr.write("Usage: pnpm cli resume <run-id> [--budget 3]\n");
+    return 2;
+  }
+  const store = openStore(env);
+  const run = store.getRun(runId);
+  if (!run) {
+    process.stderr.write(`Unknown run: ${runId}\n`);
+    store.close();
+    return 1;
+  }
+  if (run.status === "completed") {
+    process.stderr.write(`Run ${runId} is already completed.\n`);
+    store.close();
+    return 1;
+  }
+  const project = store.getProject(run.projectId);
+  store.close();
+  if (!project) {
+    process.stderr.write(
+      `Project ${run.projectId} is not registered; register it before resuming.\n`,
+    );
+    return 1;
+  }
+  const budget = flag(args, "--budget");
+  return await runGoal(
+    {
+      goal: run.goal,
+      project: project.repoPath,
+      budget: budget ? Number(budget) : run.budgetUsd,
+      resumeRunId: runId,
+      approval: flag(args, "--approval") as "ask" | "auto-safe" | "auto" | undefined,
     },
     env,
   );
@@ -291,6 +335,7 @@ function printHelp(): void {
       "  pnpm cli run \"Build a REST API\" --project ./workspaces/todo --budget 3 --approval ask",
       "  pnpm cli runs                 List past runs",
       "  pnpm cli replay <run-id>      Replay a run from its event log",
+      "  pnpm cli resume <run-id>      Continue an interrupted or paused run",
       "  pnpm cli team                 Show the team with effective models",
       "  pnpm cli pricing              Show the pricing table",
       "  pnpm cli settings             Print effective settings",

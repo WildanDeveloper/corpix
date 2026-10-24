@@ -101,6 +101,12 @@ button.primary {
   color: #fff;
 }
 
+button.inline {
+  padding: 1px 8px;
+  font-size: 11px;
+  margin-left: 8px;
+}
+
 .panel {
   background: var(--panel);
   border: 1px solid var(--border);

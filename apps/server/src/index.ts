@@ -52,6 +52,24 @@ const store = new SqliteStore(
   path.join(dataDir, "secrets.json"),
 );
 const settingsService = new SettingsService(store, process.env, env);
+
+// Anything left "running" belongs to a previous process. Mark it paused so the
+// UI can offer Resume instead of showing a run that will never move.
+const INTERRUPTED = new Set(["planning", "running", "reviewing", "merging"]);
+for (const run of store.listRuns()) {
+  if (!INTERRUPTED.has(run.status)) continue;
+  store.updateRun(run.id, {
+    status: "paused",
+    summary: [run.summary, "[interrupted by a restart; resume to continue]"]
+      .filter((line): line is string => Boolean(line))
+      .join("\n"),
+  });
+  for (const agent of store.listAgents(run.id)) {
+    if (["thinking", "working", "blocked", "walking"].includes(agent.state)) {
+      store.updateAgent(agent.id, { state: "idle" });
+    }
+  }
+}
 const active = new Map<string, ActiveRun>();
 const pendingApprovals = new Map<string, { runId: string; resolve: (approved: boolean) => void }>();
 
@@ -351,6 +369,115 @@ app.get("/api/runs/:id", (req, res) => {
     usage: store.listUsage(run.id),
   });
 });
+
+app.post("/api/runs/:id/resume", (req, res) => {
+  const body = req.body as { budgetUsd?: number; approvalMode?: "ask" | "auto-safe" | "auto" };
+  void resumeRun(req.params.id, body).then(
+    (runId) => res.status(202).json({ runId, resumed: true }),
+    (error: unknown) => res.status(400).json({ error: (error as Error).message }),
+  );
+});
+
+async function resumeRun(
+  runId: string,
+  body: { budgetUsd?: number; approvalMode?: "ask" | "auto-safe" | "auto" },
+): Promise<string> {
+  const run = store.getRun(runId);
+  if (!run) throw new Error(`Unknown run: ${runId}`);
+  if (active.has(runId)) throw new Error(`Run ${runId} is already active`);
+  if (run.status === "completed") throw new Error(`Run ${runId} is already completed`);
+  if (!run.plan) throw new Error(`Run ${runId} has no plan; dispatch a new run instead`);
+
+  const project = store.getProject(run.projectId);
+  if (!project) {
+    throw new Error(
+      `Project ${run.projectId} is not registered, so the workspace cannot be found. ` +
+        `Register it with POST /api/projects first.`,
+    );
+  }
+
+  if (body.budgetUsd !== undefined) {
+    store.updateRun(runId, { budgetUsd: body.budgetUsd });
+  }
+  if (body.approvalMode) {
+    const runtime = settingsService.load();
+    settingsService.save({ safety: { ...runtime.settings.safety, approvalMode: body.approvalMode } });
+  }
+
+  const runtime = settingsService.load();
+  const team = await loadTeam(configDir, "team.default.yaml", envForRoles(env));
+  const pricing = await effectivePricing(runtime);
+  const controller = new AbortController();
+  const record: ActiveRun = {
+    runId,
+    controller,
+    clients: new Set(),
+    status: "running",
+  };
+  active.set(runId, record);
+
+  const approvalMode = runtime.settings.safety.approvalMode;
+  const orchestrator = new Orchestrator({
+    store,
+    provider: createProviderFromSettings(runtime),
+    team,
+    runtime,
+    workspacePath: project.repoPath,
+    projectId: run.projectId,
+    runId,
+    approvalMode,
+    budgetUsd: body.budgetUsd ?? run.budgetUsd,
+    pricing,
+    signal: controller.signal,
+    approve: approvalDecider(approvalMode, async (request) => {
+      return await new Promise<boolean>((resolve) => {
+        const approvalId = `ap_${Math.random().toString(36).slice(2, 10)}`;
+        pendingApprovals.set(approvalId, { runId, resolve });
+        store.createApproval({
+          id: approvalId,
+          runId,
+          agentId: request.agentId,
+          tool: request.tool,
+          input: request.input,
+          risk: request.risk,
+          status: "pending",
+          summary: request.summary,
+          decidedAt: null,
+        });
+        broadcast(runId, "approval.requested", {
+          approvalId,
+          agentId: request.agentId,
+          tool: request.tool,
+          risk: request.risk,
+          summary: request.summary,
+        });
+      });
+    }),
+    onEvent: (envelope) => broadcastEnvelope(runId, envelope),
+  });
+
+  void orchestrator
+    .resume(run.goal)
+    .then(() => {
+      record.status = "finished";
+    })
+    .catch((error: unknown) => {
+      const code = (error as { code?: string }).code;
+      if (code !== "cancelled") {
+        const envelope = store.appendEvent(runId, "error", {
+          message: (error as Error).message,
+          code: "resume_error",
+        });
+        broadcastEnvelope(runId, envelope);
+      }
+    })
+    .finally(() => {
+      denyPendingApprovals(runId, "run ended");
+      active.delete(runId);
+    });
+
+  return runId;
+}
 
 app.post("/api/runs/:id/cancel", (req, res) => {
   const record = active.get(req.params.id);

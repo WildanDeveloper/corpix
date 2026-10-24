@@ -154,6 +154,36 @@ function OfficePanel(): ReactElement {
     );
   };
 
+  const resume = async (run: RunRecord): Promise<void> => {
+    setError("");
+    setEvents([]);
+    lastSeq.current = 0;
+    let budgetUsd = run.budgetUsd;
+    if (run.status === "paused") {
+      const answer = window.prompt(
+        "This run paused on its budget. New budget in USD:",
+        String((run.budgetUsd * 2).toFixed(2)),
+      );
+      if (answer === null) return;
+      const parsed = Number(answer);
+      if (!Number.isFinite(parsed) || parsed <= 0) {
+        setError("Budget must be a positive number.");
+        return;
+      }
+      budgetUsd = parsed;
+    }
+    try {
+      const result = await api<{ runId: string }>(`/api/runs/${run.id}/resume`, {
+        method: "POST",
+        body: JSON.stringify({ budgetUsd }),
+      });
+      setRunId(result.runId);
+      await refresh();
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  };
+
   const spent = useMemo(() => usage?.totalUsd ?? 0, [usage]);
 
   return (
@@ -185,8 +215,7 @@ function OfficePanel(): ReactElement {
           </button>
           {runId && (
             <button onClick={() => void cancel()}>Cancel</button>
-          )}
-        </div>
+          )}        </div>
         {error.length > 0 && <p className="status error">{error}</p>}
 
         {projects.length === 0 && (
@@ -247,6 +276,15 @@ function OfficePanel(): ReactElement {
           {runs.map((run) => (
             <li key={run.id}>
               <code>{run.status}</code> {formatUsd(run.spentUsd)} — {run.goal.slice(0, 70)}
+              {run.status !== "completed" && (
+                <button
+                  className="inline"
+                  onClick={() => void resume(run)}
+                  title="Continue this run where it stopped"
+                >
+                  Resume
+                </button>
+              )}
             </li>
           ))}
           {runs.length === 0 && <li className="muted">No runs yet.</li>}

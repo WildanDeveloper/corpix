@@ -35,6 +35,9 @@ design lives in [`docs/DESIGN.md`](./docs/DESIGN.md).
   editable from the web UI, the API or the CLI. No restart needed.
 - **Web UI (first pass)** — a dispatch/activity/approvals view and a full
   settings panel, built with React + Vite. The pixel-art office is still to come.
+- **Crash recovery** — interrupted runs are marked paused on restart; resume
+  continues only the unfinished tasks, reuses spend already recorded, and never
+  re-merges a branch that already landed.
 - **Command sandboxing** — `SANDBOX=bwrap` runs each command in a private mount
   and network namespace (no daemon needed), with only the worktree writable and a
   non-root uid; `docker` is supported when the daemon is available. A missing
@@ -44,12 +47,12 @@ design lives in [`docs/DESIGN.md`](./docs/DESIGN.md).
 - **CLI** — `run`, `runs`, `replay`, `team`, `settings`, `pricing`, `migrate`.
 - **HTTP/WS server** — health, projects, runs, events, approvals, usage,
   settings, models and a WebSocket event stream with `?since=` reconnect.
-- **156 tests** covering the jail, glob matching, command policy, plan
+- **161 tests** covering the jail, glob matching, command policy, plan
   validation, budget maths, provider mapping, settings precedence, git
   isolation and merges, cancellation, and an end-to-end mock run.
 
-Not implemented yet: prompt caching, resume after a crash, the pixel-art office,
-and a production packaging step.
+Not implemented yet: prompt caching, the pixel-art office, and a production
+packaging step.
 
 ## Quick start
 
@@ -170,6 +173,7 @@ Example patch:
 | `pnpm cli run "<goal>" --project <path>` | Run one goal |
 | `pnpm cli runs` | List runs |
 | `pnpm cli replay <run-id>` | Print a run's event log |
+| `pnpm cli resume <run-id>` | Continue an interrupted or paused run |
 | `pnpm cli team` | Show the loaded team and rendered prompt preview |
 | `pnpm cli pricing` | Show the pricing table |
 | `pnpm cli migrate` | Create or migrate the SQLite database |
@@ -246,6 +250,31 @@ The Settings page shows the same list and disables the option when it is not
 available. If the configured sandbox cannot start, the run logs
 `sandbox_unavailable` and continues with policy and jail only — it never fails
 silently.
+
+## Resume after a crash
+
+Runs are durable: the plan, every task, every message and every usage row are in
+SQLite, so a crash does not lose the work that already finished.
+
+1. On startup the server finds runs left in `planning`, `running`, `reviewing`
+   or `merging` and marks them `paused`, resetting their agents to `idle`. The
+   UI shows a **Resume** button; the API is `POST /api/runs/:id/resume`, the CLI
+   is `pnpm cli resume <run-id> [--budget N]`.
+2. Resume never redoes finished tasks. A task whose branch is already contained
+   in `integration` is marked `done` even if the process died before updating
+   the row, so a branch is never merged twice.
+3. Tasks that were mid-flight, failed or blocked are retried in a fresh
+   worktree, with their dependency edges intact.
+4. Spend already recorded counts against the cap. A run paused on budget resumes
+   paused unless you raise it: the UI asks for a new budget, the API takes
+   `{ "budgetUsd": 5 }`, the CLI takes `--budget 5`.
+5. Stale review tasks are cancelled and a fresh review runs at the end.
+
+What cannot be resumed: a run that crashed during planning has no plan yet, so
+the API refuses it and asks you to dispatch a new run. A run without a
+registered project also refuses, because there is no workspace to reopen.
+
+
 
 ## Git isolation (how your repo stays safe)
 

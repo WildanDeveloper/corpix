@@ -24,6 +24,8 @@ export interface CliOptions {
   team?: string;
   configDir?: string;
   quiet?: boolean;
+  /** Continue this run instead of starting a new one. */
+  resumeRunId?: string;
 }
 
 export async function loadPricing(configDir: string): Promise<Record<string, { input: number; output: number; cached_input?: number }>> {
@@ -47,7 +49,23 @@ export async function runGoal(options: CliOptions, env: Env): Promise<number> {
   );
   const pricing = { ...(await loadPricing(configDir)), ...runtime.settings.pricing };
   const provider = createProviderFromSettings(runtime);
-  const runId = `run_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+  const runId =
+    options.resumeRunId ??
+    `run_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+  const projectPath = path.resolve(options.project);
+
+  // Remember the repo so `pnpm cli resume` can find it later.
+  if (!options.resumeRunId) {
+    const projectId = path.basename(projectPath);
+    if (!bundle.store.getProject(projectId)) {
+      bundle.store.createProject({
+        id: projectId,
+        name: projectId,
+        repoPath: projectPath,
+        createdAt: new Date().toISOString(),
+      });
+    }
+  }
 
   const rl = createInterface({ input: stdin, output: stdout });
   const approvalMode = options.approval ?? runtime.settings.safety.approvalMode;
@@ -64,8 +82,8 @@ export async function runGoal(options: CliOptions, env: Env): Promise<number> {
     provider,
     team,
     runtime,
-    workspacePath: path.resolve(options.project),
-    projectId: path.basename(path.resolve(options.project)),
+    workspacePath: projectPath,
+    projectId: path.basename(projectPath),
     runId,
     approvalMode,
     budgetUsd: options.budget ?? runtime.settings.limits.budgetUsdPerGoal,
@@ -83,7 +101,9 @@ export async function runGoal(options: CliOptions, env: Env): Promise<number> {
   });
 
   try {
-    const outcome = await orchestrator.run(options.goal);
+    const outcome = options.resumeRunId
+      ? await orchestrator.resume(options.goal)
+      : await orchestrator.run(options.goal);
     process.stdout.write(`\n${outcome.summary}\n`);
     process.stdout.write(
       `\nRun ${outcome.runId}: ${outcome.status}, spent $${outcome.spentUsd.toFixed(4)}\n`,

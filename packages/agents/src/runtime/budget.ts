@@ -18,6 +18,8 @@ export interface BudgetOptions {
   budgetUsd: number;
   action: BudgetAction;
   pricing: Pricing;
+  /** Spend already recorded before a resume. */
+  initialSpentUsd?: number;
   onRecord?: (record: UsageRecord) => void;
 }
 
@@ -31,7 +33,13 @@ export class BudgetGuard {
   private stopped = false;
   readonly records: UsageRecord[] = [];
 
-  constructor(private readonly options: BudgetOptions) {}
+  constructor(private readonly options: BudgetOptions) {
+    this.spent = options.initialSpentUsd ?? 0;
+    if (this.spent >= options.budgetUsd) {
+      if (options.action === "stop") this.stopped = true;
+      else this.paused = true;
+    }
+  }
 
   get spentUsd(): number {
     return this.spent;
