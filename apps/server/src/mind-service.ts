@@ -62,6 +62,11 @@ export class MindService {
       },
       log: options.log,
       busy: options.busy,
+      sessionMemory: (role) => {
+        const run = options.store.listRuns()[0];
+        if (!run) return "";
+        return options.store.readAgentSession(run.id, role)?.memory ?? "";
+      },
     });
   }
 

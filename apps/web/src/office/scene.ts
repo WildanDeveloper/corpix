@@ -144,6 +144,8 @@ export class OfficeScene {
     files: [],
   };
   private activeBubbleAgent: string | null = null;
+  /** Per-event counters, only used by `?debug=1` to diagnose a silent office. */
+  private readonly counts: Record<string, number> = {};
   private readonly reducedMotion: boolean;
   private ready = false;
   private destroyed = false;
@@ -193,6 +195,7 @@ export class OfficeScene {
   applyEvent(event: SceneEvent, options: { instant?: boolean } = {}): void {
     if (!this.ready || this.destroyed) return;
     const instant = options.instant ?? false;
+    this.counts[event.type] = (this.counts[event.type] ?? 0) + 1;
     const payload = event.payload as Record<string, unknown>;
     switch (event.type) {
       case "run.started":
@@ -269,13 +272,18 @@ export class OfficeScene {
           String(payload.role ?? "backend"),
           instant,
         );
-        if (agent) this.applyDecision(agent, payload);
+        if (agent) {
+          if (instant) this.sendToDesk(agent, true);
+          this.applyDecision(agent, { ...payload, replay: instant });
+        }
         break;
       }
       case "mind.said": {
         const agent = this.agentFor(String(payload.agentId ?? ""));
         if (!agent || typeof payload.text !== "string") break;
         agent.mind.said = payload.text;
+        // Old chatter must not be replayed as bubbles on page load.
+        if (instant) break;
         this.speech.enqueue({
           agentId: agent.id,
           text: payload.text,
@@ -285,13 +293,14 @@ export class OfficeScene {
         break;
       }
       case "mind.conversation.started":
-        this.beginConversation(payload);
+        // Replaying a finished conversation would trap the pair at the table.
+        if (!instant) this.beginConversation(payload);
         break;
       case "mind.conversation.line":
-        this.pushConversationLine(payload);
+        if (!instant) this.pushConversationLine(payload);
         break;
       case "mind.conversation.ended":
-        this.endConversation();
+        if (!instant) this.endConversation();
         break;
       case "run.finished":
       case "run.failed":
@@ -361,6 +370,7 @@ export class OfficeScene {
     conversation: { id: string; index: number; participants: string[] } | null;
     bubbles: string[];
     pendingSpeech: number;
+    counts: Record<string, number>;
   } {
     return {
       conversation: this.conversation
@@ -372,6 +382,12 @@ export class OfficeScene {
         : null,
       bubbles: [...this.agents.values()].filter((agent) => agent.bubble).map((agent) => agent.id),
       pendingSpeech: this.speech.pending,
+      counts: {
+        ...this.counts,
+        ...Object.fromEntries(Object.entries(this.speech.stats).map(([k, v]) => [`speech.${k}`, v])),
+        "speech.clock": Math.round(this.speech.debug.clock * 10) / 10,
+        "speech.until": Math.round(this.speech.debug.until * 10) / 10,
+      },
     };
   }
 
@@ -414,7 +430,11 @@ export class OfficeScene {
       },
     });
     label.anchor.set(0.5, 1);
-    label.position.set(0, -54);
+    // Alternate the name height by desk order, not by hash: two adjacent desks
+    // must never land on the same parity or their names touch.
+    const deskIndex = DESKS.findIndex((desk) => desk.role === role);
+    const stagger = (deskIndex >= 0 ? deskIndex : 0) % 2 === 0 ? 0 : 10;
+    label.position.set(0, -54 - stagger);
     root.addChild(label);
 
     const status = new Text({
@@ -429,7 +449,7 @@ export class OfficeScene {
     status.anchor.set(0.5, 1);
     // Alternate the status line height per role, so two people standing next to
     // each other never print their labels on top of one another.
-    status.position.set(0, -68 - (hashString(role) % 2 === 0 ? 0 : 11));
+    status.position.set(0, -68 - stagger - 11);
     root.addChild(status);
 
     const start = nearestWalkable(ENTRANCE);
@@ -439,7 +459,7 @@ export class OfficeScene {
 
     const desk = deskFor(role);
     const agent: OfficeAgent = {
-      id: agentId,
+      id: canonical,
       role,
       name,
       root,
@@ -683,6 +703,8 @@ export class OfficeScene {
   private applyDecision(
     agent: OfficeAgent,
     decision: {
+      /** True while replaying history: restore the mind, do not re-walk. */
+      replay?: boolean;
       action?: unknown;
       place?: unknown;
       label?: unknown;
@@ -713,17 +735,20 @@ export class OfficeScene {
     agent.mind.doing = label;
     agent.mindTimer = seconds;
 
+    // Replaying a long history would send everyone to wherever they were hours
+    // ago. On replay only the inner life is restored; bodies keep their desks.
+    if (decision.replay === true) return;
+
     // A real task always wins over an idle decision.
     if (agent.state !== "idle") return;
     if (agent.inConversation) return;
 
     // "talk" is started by the server, which owns the other side's model too.
-    // Walk towards the meeting room so the intent is visible; if the other side
-    // never becomes free, the decision expires and the agent drifts back.
+    // Do not walk anywhere yet: `mind.conversation.started` decides the table.
+    // Sending every would-be talker to the meeting room is what piled six people
+    // into one corner and printed their labels on top of each other.
     if (action === "talk" || action === "chat") {
-      const spot = MEETING_SPOTS[Math.floor(mulberry32(hashString(agent.id))() * MEETING_SPOTS.length)];
-      if (spot && !agent.inConversation) this.walkTo(agent, spot, undefined, false, "chat");
-      this.activity(agent, label || "looking for someone", 0x9fb3c8);
+      this.activity(agent, "", 0x9fb3c8);
       return;
     }
 
@@ -757,7 +782,7 @@ export class OfficeScene {
     const fixed = anchors[place];
     if (fixed) {
       return {
-        point: fixed,
+        point: this.claimTile(fixed, agent),
         purpose:
           place === "coffee" || place === "water" || place === "smoke" || place === "whiteboard" || place === "window"
             ? (place as WalkPurpose)
@@ -765,8 +790,18 @@ export class OfficeScene {
       };
     }
     if (place === "meeting") {
-      const spot = MEETING_SPOTS[Math.floor(random() * MEETING_SPOTS.length)];
-      return spot ? { point: spot, purpose: "meeting" } : null;
+      // The room has a fixed number of seats. If they are taken, stay at the
+      // desk instead of standing on somebody's head.
+      const taken = new Set(
+        [...this.agents.values()]
+          .filter((other) => other.id !== agent.id)
+          .map((other) => (other.path.length > 0 ? other.path[other.path.length - 1] : other.tile))
+          .map((tile) => `${tile?.x},${tile?.y}`),
+      );
+      const free = MEETING_SPOTS.filter((spot) => !taken.has(`${spot.x},${spot.y}`));
+      if (free.length === 0) return null;
+      const spot = free[Math.floor(random() * free.length)];
+      return spot ? { point: this.claimTile(spot, agent), purpose: "meeting" } : null;
     }
     if (place === "wander" || place === "server-room" || place === "break-room") {
       const angle = random() * Math.PI * 2;
@@ -778,6 +813,35 @@ export class OfficeScene {
       return isWalkable(point.x, point.y) ? { point, purpose: "wander" } : null;
     }
     return null;
+  }
+
+  /**
+   * Two people cannot stand on the same tile. If the spot is taken, take the
+   * nearest free neighbour so a coffee break looks like a coffee break.
+   */
+  private claimTile(preferred: Point, agent: OfficeAgent): Point {
+    const taken = new Set(
+      [...this.agents.values()]
+        .filter((other) => other.id !== agent.id)
+        .map((other) => (other.path.length > 0 ? other.path[other.path.length - 1] : other.tile))
+        .map((tile) => `${tile?.x},${tile?.y}`),
+    );
+    if (isWalkable(preferred.x, preferred.y) && !taken.has(`${preferred.x},${preferred.y}`)) {
+      return preferred;
+    }
+    // Nearest free neighbour, closest first, so a queue at the coffee machine
+    // forms a short line instead of a pile.
+    const candidates: Array<{ point: Point; distance: number }> = [];
+    for (let dy = -2; dy <= 2; dy++) {
+      for (let dx = -2; dx <= 2; dx++) {
+        if (dx === 0 && dy === 0) continue;
+        const point = { x: preferred.x + dx, y: preferred.y + dy };
+        if (!isWalkable(point.x, point.y) || taken.has(`${point.x},${point.y}`)) continue;
+        candidates.push({ point, distance: Math.abs(dx) + Math.abs(dy) });
+      }
+    }
+    candidates.sort((a, b) => a.distance - b.distance);
+    return candidates[0]?.point ?? nearestWalkable(preferred);
   }
 
   /** A conversation is started by the server, which generates both sides. */
@@ -810,8 +874,9 @@ export class OfficeScene {
       nextAt: 0,
       ended: false,
     };
-    // The group owns the speech channel while it lasts.
-    this.speech.dropBelow(50);
+    // Conversations take priority, but queued chatter is not thrown away: the
+    // scheduler simply serves the higher priority first. Erasing the queue here
+    // is what made the office look mute while agents were constantly talking.
 
     const base = hashString(participants.map((agent) => agent.id).join(":")) % MEETING_SPOTS.length;
     participants.forEach((participant, index) => {
@@ -821,7 +886,7 @@ export class OfficeScene {
       participant.mindTimer = 999;
       participant.pose = "idle";
       this.facingTexture(participant);
-      this.activity(participant, "heading to a chat", 0x9fb3c8);
+      this.activity(participant, "", 0x9fb3c8);
     });
   }
 
@@ -850,9 +915,6 @@ export class OfficeScene {
     // Wait until the whole group is seated; a line while walking looks wrong.
     if (participants.length < 2 || participants.some((agent) => agent.path.length > 0)) return;
 
-    // One queued line at a time keeps the exchange readable.
-    if (this.speech.pending > 0) return;
-
     conversation.nextAt -= delta;
     if (conversation.nextAt > 0) return;
 
@@ -877,14 +939,10 @@ export class OfficeScene {
     });
     speaker.mind.said = line.text;
 
-    const otherName = participants.find((participant) => participant.id !== speaker.id)?.name ?? "the team";
+    // Exactly one status line per conversation: the person speaking. Listeners
+    // show nothing, so labels never overlap and the turn is obvious.
     for (const participant of participants) {
-      if (participant.id === speaker.id) {
-        this.activity(participant, `talking to ${otherName}`, 0xffd75e);
-      } else {
-        // Listeners stay quiet so labels never overlap and the turn is obvious.
-        this.activity(participant, "", 0x7f8c9b);
-      }
+      this.activity(participant, participant.id === speaker.id ? "talking" : "", 0xffd75e);
     }
 
     conversation.index += 1;
@@ -962,7 +1020,11 @@ export class OfficeScene {
       .lineTo(13, height + 5)
       .fill(0xf0f4f8);
     bubble.addChild(box, label);
-    bubble.position.set(-width / 2, -96 - height - (hashString(agent.role) % 2 === 0 ? 0 : 11));
+    // Just above the head: -96 put it a whole sprite above, which read as a
+    // floating card rather than a speech bubble.
+    // Above the name and status lines, never on top of them.
+    const lift = DESKS.findIndex((desk) => desk.role === agent.role) % 2 === 0 ? 0 : 12;
+    bubble.position.set(-width / 2, -78 - height - lift);
     agent.root.addChild(bubble);
     agent.bubble = bubble;
     agent.bubbleTimer = seconds;
@@ -991,9 +1053,11 @@ export class OfficeScene {
     // One speaker at a time: drop queued lines from agents that moved on, then
     // let the scheduler grant the next bubble.
     this.speech.dropStale((entry) => {
-      const agent = this.agents.get(entry.agentId);
-      if (!agent) return false;
-      return entry.tag === "conversation" ? agent.inConversation : true;
+      const agent = this.agentFor(entry.agentId);
+      // A line from an agent that no longer exists is stale. Conversation lines
+      // stay queued even after the group disperses, so the last sentence is
+      // still read instead of vanishing mid-air.
+      return Boolean(agent);
     });
     const granted = this.speech.tick(delta);
     if (granted) {
@@ -1003,6 +1067,7 @@ export class OfficeScene {
           this.clearBubble(this.activeBubbleAgent);
         }
         this.showBubble(speaker, granted.text, granted.duration);
+        this.counts["speech.shown"] = (this.counts["speech.shown"] ?? 0) + 1;
         this.activeBubbleAgent = granted.agentId;
       }
     }

@@ -22,6 +22,8 @@ export interface MindRunnerOptions {
   log?: (line: string) => void;
   /** Pause the loop while an actual task is running. */
   busy?: () => boolean;
+  /** The agent's own work session, keyed by role. */
+  sessionMemory?: (role: string) => string;
 }
 
 interface Conversation {
@@ -360,8 +362,12 @@ export class MindRunner {
 
   private pushMemory(state: MindState, memory: string | undefined, settings: MindSettings): void {
     if (!memory || memory.trim().length === 0 || settings.memorySize === 0) return;
+    const text = memory.trim().slice(0, 200);
+    // A person does not write the same diary line eight times. Skip anything
+    // that is essentially the last thing they already remembered.
+    if (state.memories.slice(0, 3).some((entry) => similar(entry.text, text))) return;
     state.memories = [
-      { at: new Date(this.now()).toISOString(), text: memory.trim().slice(0, 200) },
+      { at: new Date(this.now()).toISOString(), text },
       ...state.memories,
     ].slice(0, settings.memorySize);
   }
@@ -421,6 +427,7 @@ export class MindRunner {
       clock: new Date(this.now()).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" }),
       colleagues,
       body: this.bodyOf(agent),
+      session: this.options.sessionMemory?.(agent.role) ?? "",
     };
   }
 
@@ -435,4 +442,23 @@ function clamp(value: number): number {
 
 function clampSigned(value: number): number {
   return Math.max(-1, Math.min(1, value));
+}
+
+
+/** Cheap similarity: shared words over total words, good enough to spot repeats. */
+function similar(a: string, b: string): boolean {
+  const words = (value: string): Set<string> =>
+    new Set(
+      value
+        .toLowerCase()
+        .replace(/[^a-z0-9\s]/g, " ")
+        .split(/\s+/)
+        .filter((word) => word.length > 3),
+    );
+  const left = words(a);
+  const right = words(b);
+  if (left.size === 0 || right.size === 0) return a.trim() === b.trim();
+  let shared = 0;
+  for (const word of left) if (right.has(word)) shared++;
+  return shared / Math.min(left.size, right.size) > 0.6;
 }

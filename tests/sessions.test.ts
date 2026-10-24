@@ -33,6 +33,8 @@ afterEach(async () => {
 
 describe("agent sessions", () => {
   it("gives every agent its own conversation, keyed by task", async () => {
+    // Transcripts are still per task (that is what the audit trail needs), but
+    // the session memory below is per role and survives across tasks.
     const store = new MemoryStore();
     const orchestrator = new Orchestrator({
       store,
@@ -92,16 +94,16 @@ describe("agent sessions", () => {
 
     await orchestrator.run("Keep contexts isolated");
 
-    // Every worker prompt names its own task and no other task's id.
-    const workerPrompts = promptsSeen.filter((prompt) => prompt.startsWith("Task "));
+    // Every worker prompt names its own task and no other task's id. The task
+    // line is not always first: a second task for the same role is prefixed
+    // with that agent's session memory.
+    const workerPrompts = promptsSeen.filter((prompt) => /(^|\n)Task [\w-]+:/.test(prompt));
     expect(workerPrompts.length).toBeGreaterThan(1);
+    const taskIds = workerPrompts.map((prompt) => /(?:^|\n)Task ([\w-]+):/.exec(prompt)?.[1] ?? "");
     for (const prompt of workerPrompts) {
-      const ownTaskId = prompt.slice(5, prompt.indexOf(":"));
-      const otherIds = workerPrompts
-        .map((other) => other.slice(5, other.indexOf(":")))
-        .filter((id) => id !== ownTaskId);
-      for (const otherId of otherIds) {
-        expect(prompt).not.toContain(otherId);
+      const ownTaskId = /(?:^|\n)Task ([\w-]+):/.exec(prompt)?.[1] ?? "";
+      for (const otherId of taskIds.filter((id) => id !== ownTaskId)) {
+        expect(prompt).not.toContain(`Task ${otherId}:`);
       }
     }
   });
@@ -131,5 +133,96 @@ describe("agent sessions", () => {
     const roles = (orchestrator as unknown as { team: LoadedTeam }).team;
     expect(roles.roles.get("backend")?.contextTokens).toBe(1_000_000);
     expect(roles.roles.get("qa")?.contextTokens).toBeUndefined();
+  });
+});
+
+describe("per-agent sessions", () => {
+  async function runTwice() {
+    const store = new MemoryStore();
+    const orchestrator = new Orchestrator({
+      store,
+      provider: new MockProvider(),
+      team,
+      runtime: runtimeWith({}),
+      workspacePath: workspace,
+      projectId: "test",
+      runId: "run_session_memory",
+      approvalMode: "auto",
+    });
+    await orchestrator.run("Ship something with several tasks");
+    return { store };
+  }
+
+  it("creates one session per role, not one shared session", async () => {
+    const { store } = await runTwice();
+    const sessions = store.listAgentSessions("run_session_memory");
+    expect(sessions.length).toBeGreaterThan(1);
+    const roles = sessions.map((session) => session.role);
+    expect(new Set(roles).size).toBe(roles.length);
+  });
+
+  it("records a memory and a task count per role", async () => {
+    const { store } = await runTwice();
+    for (const session of store.listAgentSessions("run_session_memory")) {
+      expect(session.tasks).toBeGreaterThan(0);
+      expect(session.memory.length).toBeGreaterThan(0);
+      expect(session.memory).toContain("->");
+    }
+  });
+
+  it("never leaks one role's memory into another role's session", async () => {
+    const { store } = await runTwice();
+    for (const session of store.listAgentSessions("run_session_memory")) {
+      for (const other of store.listAgentSessions("run_session_memory")) {
+        if (other.role === session.role) continue;
+        // Each memory only names the tasks that role actually worked on.
+        const tasks = store.listTasks("run_session_memory").filter((task) => task.role === other.role);
+        for (const task of tasks) {
+          expect(session.memory).not.toContain(task.title);
+        }
+      }
+    }
+  });
+
+  it("carries the memory into the next task for the same role", async () => {
+    const store = new MemoryStore();
+    const prompts: string[] = [];
+    const provider = new MockProvider({
+      respond: (request) => {
+        const first = request.messages[0];
+        if (first?.content[0]?.type === "text") prompts.push(first.content[0].text);
+        return undefined;
+      },
+    });
+    const orchestrator = new Orchestrator({
+      store,
+      provider,
+      team,
+      runtime: runtimeWith({}),
+      workspacePath: workspace,
+      projectId: "test",
+      runId: "run_carry",
+      approvalMode: "auto",
+    });
+    await orchestrator.run("Two tasks for the same role");
+
+    // Seed a second task for a role that already has a session.
+    const sessions = store.listAgentSessions("run_carry");
+    const seeded = sessions[0];
+    expect(seeded).toBeTruthy();
+    store.writeAgentSession({ ...seeded!, memory: "- earlier work: added the API", tasks: 1 });
+
+    const brief = {
+      id: "t99",
+      title: "Second pass",
+      instructions: "continue",
+      acceptanceCriteria: ["ok"],
+      memory: store.readAgentSession("run_carry", seeded!.role)?.memory ?? "",
+      previousTasks: 1,
+    };
+    const { buildTaskPrompt } = await import("@corpix/agents");
+    const prompt = buildTaskPrompt(brief, team.workers[0]!.role);
+    expect(prompt).toContain("not your first task here");
+    expect(prompt).toContain("added the API");
   });
 });

@@ -42,6 +42,8 @@ export interface MindContext {
   clock: string;
   colleagues: Array<{ agent: MindAgent; doing: string; mood: Mood }>;
   body: { energy: number; caffeine: number; social: number; stress: number };
+  /** This agent's own work session so far (not the team's). */
+  session?: string;
 }
 
 export interface MindEngineOptions {
@@ -175,11 +177,16 @@ It is ${formatClock(context.clock)}. The office has a coffee machine, a water co
 Your colleagues right now:
 ${people || "- (nobody else is here)"}
 
-What you have been through:
+What you have been through (most recent first):
 ${memories}
+
+Do not repeat your last action or your last sentence just because it worked before. If you already pressed someone for something, either follow up differently or let it rest.
 
 How you feel: ${state.mood.label} (valence ${state.mood.valence.toFixed(2)}, energy ${state.mood.arousal.toFixed(2)}).
 Body: energy ${Math.round(context.body.energy)}/100, caffeine ${Math.round(context.body.caffeine)}/100 (low means you want coffee), need for company ${Math.round(context.body.social)}/100, stress ${Math.round(context.body.stress)}/100.
+
+Your own work session so far (this is your memory, not the team's):
+${context.session?.trim() || "nothing yet"}
 
 The work on the board:
 Goal: ${context.goal || "no active goal"}

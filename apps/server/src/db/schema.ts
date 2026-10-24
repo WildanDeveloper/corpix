@@ -102,6 +102,18 @@ CREATE TABLE IF NOT EXISTS approvals (
 );
 CREATE INDEX IF NOT EXISTS idx_approvals_run ON approvals(run_id, status);
 
+CREATE TABLE IF NOT EXISTS agent_sessions (
+  run_id       TEXT NOT NULL,
+  role         TEXT NOT NULL,
+  memory       TEXT NOT NULL DEFAULT '',
+  tasks        INTEGER NOT NULL DEFAULT 0,
+  input_tokens INTEGER NOT NULL DEFAULT 0,
+  output_tokens INTEGER NOT NULL DEFAULT 0,
+  updated_at   TEXT NOT NULL,
+  PRIMARY KEY (run_id, role)
+);
+CREATE INDEX IF NOT EXISTS idx_agent_sessions_run ON agent_sessions(run_id);
+
 CREATE TABLE IF NOT EXISTS settings (
   key   TEXT PRIMARY KEY,
   value TEXT NOT NULL

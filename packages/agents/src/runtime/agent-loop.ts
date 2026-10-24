@@ -39,6 +39,14 @@ export interface TaskBrief {
   title: string;
   instructions: string;
   acceptanceCriteria: string[];
+  /**
+   * What this agent already did earlier in the run, in its own voice. Carried
+   * into the first user message so a second task for the same role continues a
+   * session instead of starting from zero.
+   */
+  memory?: string;
+  /** How many earlier tasks this agent completed in this run. */
+  previousTasks?: number;
 }
 
 export interface AgentRunOptions {
@@ -89,7 +97,17 @@ export interface AgentRunResult {
 }
 
 export function buildTaskPrompt(task: TaskBrief, role: Role): string {
+  const memory =
+    task.memory && task.memory.trim().length > 0
+      ? [
+          `You are ${role.title} on this team and this is not your first task here.`,
+          `You already did ${task.previousTasks ?? 1} task(s) in this run. What you learned:`,
+          task.memory.trim(),
+          "",
+        ]
+      : [];
   return [
+    ...memory,
     `Task ${task.id}: ${task.title}`,
     "",
     "Instructions:",

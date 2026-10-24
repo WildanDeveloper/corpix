@@ -75,6 +75,22 @@ export interface ApprovalRecord {
   decidedAt: string | null;
 }
 
+/**
+ * One agent's own session. Unlike a task transcript, it survives from task to
+ * task inside a run: the backend who did the API remembers doing it when the
+ * next task for the same role starts.
+ */
+export interface AgentSessionRecord {
+  runId: string;
+  role: string;
+  /** Compact, first-person notes from previous tasks. */
+  memory: string;
+  tasks: number;
+  inputTokens: number;
+  outputTokens: number;
+  updatedAt: string;
+}
+
 export interface MessageRow {
   taskId: string;
   agentId: string;
@@ -128,6 +144,10 @@ export interface Store {
   appendMessage(row: MessageRow): void;
   listMessages(taskId: string): MessageRow[];
 
+  readAgentSession(runId: string, role: string): AgentSessionRecord | null;
+  writeAgentSession(row: AgentSessionRecord): void;
+  listAgentSessions(runId: string): AgentSessionRecord[];
+
   readSettings(): unknown | null;
   writeSettings(settings: unknown): void;
   readApiKey(): string;
@@ -146,6 +166,7 @@ export class MemoryStore implements Store {
   private readonly usage: UsageRecordRow[] = [];
   private readonly approvals = new Map<string, ApprovalRecord>();
   private readonly messages: MessageRow[] = [];
+  private readonly sessions = new Map<string, AgentSessionRecord>();
 
   createProject(project: ProjectRecord): void {
     this.projects.set(project.id, { ...project });
@@ -247,6 +268,18 @@ export class MemoryStore implements Store {
     return [...this.approvals.values()].filter(
       (approval) => approval.runId === runId && (status === undefined || approval.status === status),
     );
+  }
+
+  readAgentSession(runId: string, role: string): AgentSessionRecord | null {
+    return this.sessions.get(`${runId}:${role}`) ?? null;
+  }
+
+  writeAgentSession(row: AgentSessionRecord): void {
+    this.sessions.set(`${row.runId}:${row.role}`, { ...row });
+  }
+
+  listAgentSessions(runId: string): AgentSessionRecord[] {
+    return [...this.sessions.values()].filter((row) => row.runId === runId);
   }
 
   appendMessage(row: MessageRow): void {

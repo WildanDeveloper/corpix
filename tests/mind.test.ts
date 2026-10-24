@@ -247,6 +247,19 @@ describe("the runner keeps consequences, not a script", () => {
     expect(events).toHaveLength(0);
   });
 
+  it("does not write the same memory twice in a row", async () => {
+    const { runner: loop } = runner(
+      fakeEngine({ decision: { remember: "Pressed QA again for the raw 14:07 line." } }),
+      { memorySize: 8 },
+    );
+    loop.tick();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    loop.tick();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    const mind = loop.minds().find((entry) => entry.agentId === "backend");
+    expect(mind?.memories.length).toBe(1);
+  });
+
   it("keeps a bounded memory per agent", async () => {
     const { runner: loop } = runner(
       fakeEngine({ decision: { remember: "I moved my chair." } }),

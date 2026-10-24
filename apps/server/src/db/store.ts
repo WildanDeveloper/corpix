@@ -330,6 +330,36 @@ export class SqliteStore implements Store {
     }));
   }
 
+  // --- agent sessions -------------------------------------------------------
+  readAgentSession(runId: string, role: string): import("@corpix/agents").AgentSessionRecord | null {
+    const row = this.db
+      .prepare("SELECT * FROM agent_sessions WHERE run_id = ? AND role = ?")
+      .get(runId, role) as Record<string, unknown> | undefined;
+    return row ? sessionFrom(row) : null;
+  }
+
+  writeAgentSession(row: import("@corpix/agents").AgentSessionRecord): void {
+    this.db
+      .prepare(
+        `INSERT INTO agent_sessions (run_id, role, memory, tasks, input_tokens, output_tokens, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(run_id, role) DO UPDATE SET
+           memory = excluded.memory,
+           tasks = excluded.tasks,
+           input_tokens = excluded.input_tokens,
+           output_tokens = excluded.output_tokens,
+           updated_at = excluded.updated_at`,
+      )
+      .run(row.runId, row.role, row.memory, row.tasks, row.inputTokens, row.outputTokens, row.updatedAt);
+  }
+
+  listAgentSessions(runId: string): import("@corpix/agents").AgentSessionRecord[] {
+    const rows = this.db
+      .prepare("SELECT * FROM agent_sessions WHERE run_id = ? ORDER BY role")
+      .all(runId) as Record<string, unknown>[];
+    return rows.map(sessionFrom);
+  }
+
   // --- messages -------------------------------------------------------------
   appendMessage(row: MessageRow): void {
     this.db
@@ -446,5 +476,18 @@ function rowToAgent(row: Record<string, unknown>): AgentRecord {
     name: row.name as string,
     model: row.model as string,
     state: row.state as AgentRecord["state"],
+  };
+}
+
+
+function sessionFrom(row: Record<string, unknown>): import("@corpix/agents").AgentSessionRecord {
+  return {
+    runId: row.run_id as string,
+    role: row.role as string,
+    memory: (row.memory as string) ?? "",
+    tasks: (row.tasks as number) ?? 0,
+    inputTokens: (row.input_tokens as number) ?? 0,
+    outputTokens: (row.output_tokens as number) ?? 0,
+    updatedAt: (row.updated_at as string) ?? "",
   };
 }

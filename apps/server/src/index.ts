@@ -284,7 +284,24 @@ app.post("/api/projects", (req, res) => {
 });
 
 app.get("/api/mind", (_req, res) => {
-  res.json({ minds: mind.minds(), settings: settingsService.load().settings.mind });
+  // Prefer the newest run that actually has work sessions; a fresh failed run
+  // should not hide the sessions from the run before it.
+  const runs = store.listRuns();
+  const sessionRun = runs.find((run) => store.listAgentSessions(run.id).length > 0) ?? runs[0];
+  const sessions = sessionRun ? store.listAgentSessions(sessionRun.id) : [];
+  res.json({
+    minds: mind.minds(),
+    settings: settingsService.load().settings.mind,
+    // One row per agent, proving sessions are per role and not shared.
+    sessions: sessions.map((session) => ({
+      role: session.role,
+      tasks: session.tasks,
+      memory: session.memory,
+      inputTokens: session.inputTokens,
+      outputTokens: session.outputTokens,
+      updatedAt: session.updatedAt,
+    })),
+  });
 });
 
 app.post("/api/mind/say", (req, res) => {

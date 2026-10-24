@@ -1273,11 +1273,16 @@ export class Orchestrator {
       systemPrompt: this.renderFor(member.role, member.name),
     };
 
+    // The same person, continuing their own session: earlier tasks for this
+    // role are visible, other roles' work is not.
+    const session = this.store.readAgentSession(runId, task.role);
     const brief: TaskBrief = {
       id: task.id,
       title: task.title,
       instructions: planTask?.instructions ?? task.instructions,
       acceptanceCriteria: task.acceptanceCriteria,
+      memory: session?.memory ?? "",
+      previousTasks: session?.tasks ?? 0,
     };
 
     // Each task works in its own worktree and branch, so two agents can never
@@ -1287,6 +1292,24 @@ export class Orchestrator {
     let committed = false;
     try {
       result = await this.runAgentWithTimeout(agent, brief, runId, task.id, undefined, worktree);
+    } catch (error) {
+      // A crashed or timed-out agent still produced knowledge. Turn it into an
+      // honest failed report so the task is recorded and the session learns.
+      const message = (error as Error).message;
+      result = {
+        status: "report",
+        report: {
+          status: "failed",
+          summary: message,
+          filesChanged: [],
+          commandsRun: [],
+          openIssues: [message],
+        },
+        followUpTasks: [],
+        messages: [],
+        text: message,
+        steps: 0,
+      };
     } finally {
       if (worktree) {
         committed = await this.commitTask(task, worktree);
@@ -1354,6 +1377,9 @@ export class Orchestrator {
       report,
       finishedAt: new Date().toISOString(),
     });
+
+    // Persist what this person learned, for their next task in this run.
+    this.recordSession(runId, task, report, ok);
     this.emit({
       type: ok ? "task.completed" : "task.failed",
       payload: {
@@ -1367,6 +1393,35 @@ export class Orchestrator {
     });
     this.store.updateAgent(agentId, { state: ok ? "done" : "error" });
     return ok;
+  }
+
+  /**
+   * Fold a finished task into the role's own session. The memory is a compact
+   * first-person log, capped so it cannot crowd out the next task's prompt.
+   */
+  private recordSession(runId: string, task: TaskRecord, report: Report, ok: boolean): void {
+    const previous = this.store.readAgentSession(runId, task.role);
+    const usage = this.store
+      .listUsage(runId)
+      .filter((row) => row.taskId === task.id);
+    const inputTokens = usage.reduce((sum, row) => sum + row.usage.inputTokens, 0);
+    const outputTokens = usage.reduce((sum, row) => sum + row.usage.outputTokens, 0);
+    const line = `- ${task.title} -> ${ok ? "done" : report.status}: ${report.summary
+      .replace(/\s+/g, " ")
+      .slice(0, 220)}`;
+    const memory = [previous?.memory ?? "", line]
+      .filter((part) => part.trim().length > 0)
+      .join("\n")
+      .slice(-4000);
+    this.store.writeAgentSession({
+      runId,
+      role: task.role,
+      memory,
+      tasks: (previous?.tasks ?? 0) + 1,
+      inputTokens: (previous?.inputTokens ?? 0) + inputTokens,
+      outputTokens: (previous?.outputTokens ?? 0) + outputTokens,
+      updatedAt: new Date().toISOString(),
+    });
   }
 
   private async runAgentWithTimeout(

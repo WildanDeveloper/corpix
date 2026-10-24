@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type ReactElement } from "react";
 import { api } from "./api";
-import type { MindSnapshot } from "./types";
+import type { AgentSessionView, MindSnapshot } from "./types";
 
 /**
  * The inner life of the office, as the agents themselves describe it.
@@ -11,6 +11,7 @@ import type { MindSnapshot } from "./types";
  */
 export function MindPanel(): ReactElement {
   const [minds, setMinds] = useState<MindSnapshot[]>([]);
+  const [sessions, setSessions] = useState<AgentSessionView[]>([]);
   const [error, setError] = useState("");
   const [talking, setTalking] = useState<string | null>(null);
   const [message, setMessage] = useState("");
@@ -21,8 +22,9 @@ export function MindPanel(): ReactElement {
 
   const load = useCallback(async () => {
     try {
-      const data = await api<{ minds: MindSnapshot[] }>("/api/mind");
+      const data = await api<{ minds: MindSnapshot[]; sessions?: AgentSessionView[] }>("/api/mind");
       setMinds(data.minds);
+      setSessions(data.sessions ?? []);
       setError("");
     } catch (err) {
       setError((err as Error).message);
@@ -136,6 +138,20 @@ export function MindPanel(): ReactElement {
 
               {expanded && (
                 <div className="mind-detail">
+                  <h4>Own session</h4>
+                  {(() => {
+                    const session = sessions.find((entry) => entry.role === mind.role);
+                    if (!session) return <p className="muted small">No work session yet.</p>;
+                    return (
+                      <>
+                        <p className="muted small">
+                          {session.tasks} task(s) · {session.inputTokens.toLocaleString()} in /{" "}
+                          {session.outputTokens.toLocaleString()} out tokens on this agent
+                        </p>
+                        <pre className="session-memory">{session.memory || "(empty)"}</pre>
+                      </>
+                    );
+                  })()}
                   <h4>Remembers</h4>
                   {mind.memories.length === 0 ? (
                     <p className="muted small">Nothing yet.</p>

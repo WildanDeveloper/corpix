@@ -63,7 +63,7 @@ place. See [`docs/DESIGN.md`](./docs/DESIGN.md) for the full target design.
   and `dist/cli.mjs`; a non-root Dockerfile and compose file ship alongside.
 - **HTTP/WS server** — health, projects, runs, events, approvals, usage,
   settings, models and a WebSocket event stream with `?since=` reconnect.
-- **209 tests** covering the jail, glob matching, command policy, plan
+- **214 tests** covering the jail, glob matching, command policy, plan
   validation, budget maths, provider mapping, settings precedence, git
   isolation and merges, cancellation, office layout and pathfinding, the
   production bundles, and an end-to-end mock run.
@@ -483,6 +483,19 @@ meeting room, pacing, tidying, working, or walking over to talk to a specific
 colleague. It can also choose to do nothing. The office only renders the answer:
 `mind.decided` moves the body and sets the label, `mind.said` queues the bubble.
 
+**Every agent has its own session.** Two different mechanisms, both per agent:
+
+| | Scope | Persists across | Budget |
+|---|---|---|---|
+| Work session | `(run, role)` in `agent_sessions` | every task that role gets in the run | `contextTokens` per role |
+| Mind | `(role)` in `data/minds.json` | restarts, reloads, tasks | `mind.maxTokens` per turn |
+
+A worker's transcript is still stored per task (that is the audit trail), but the
+agent carries a session memory into its next task: what it did, what it learned,
+how many tasks it has completed and its own token totals. Another role never sees
+it. That is why the backend remembers shipping the API when it is asked for a
+second change, while QA does not.
+
 **Personality is state, not rules.** Every agent keeps:
 
 - a **mood** (valence, energy and its own word: "grumpy", "smug", "wiped out"),
@@ -504,6 +517,8 @@ gets the bubble and a "talking to …" line, listeners stay silent, and the next
 line is only queued once the previous one has been read.
 
 ![The Minds tab](docs/screenshots/minds.png)
+
+![One agent's own session](docs/screenshots/sessions.png)
 
 The **Minds** tab shows the inner life as the agents themselves describe it:
 current thought, mood, what they are doing, what they remember, and what they

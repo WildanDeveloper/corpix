@@ -71,6 +71,15 @@ export interface MindSnapshot {
   relationships: Record<string, { sentiment: number; note: string; talks: number }>;
 }
 
+export interface AgentSessionView {
+  role: string;
+  tasks: number;
+  memory: string;
+  inputTokens: number;
+  outputTokens: number;
+  updatedAt: string;
+}
+
 export interface TeamSettings {
   company: string;
   names: Record<string, string>;
