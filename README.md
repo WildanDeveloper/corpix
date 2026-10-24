@@ -63,7 +63,7 @@ place. See [`docs/DESIGN.md`](./docs/DESIGN.md) for the full target design.
   and `dist/cli.mjs`; a non-root Dockerfile and compose file ship alongside.
 - **HTTP/WS server** — health, projects, runs, events, approvals, usage,
   settings, models and a WebSocket event stream with `?since=` reconnect.
-- **224 tests** covering the jail, glob matching, command policy, plan
+- **209 tests** covering the jail, glob matching, command policy, plan
   validation, budget maths, provider mapping, settings precedence, git
   isolation and merges, cancellation, office layout and pathfinding, the
   production bundles, and an end-to-end mock run.
@@ -107,7 +107,7 @@ everything except hard denials.
 
 ```bash
 pnpm build            # typecheck + web build + dist/server.mjs + dist/cli.mjs
-pnpm start            # node dist/server.mjs, serves the built UI on :3001
+pnpm start            # node dist/server.mjs, serves the built UI on :3080
 node dist/cli.mjs team
 ```
 
@@ -120,7 +120,7 @@ self-contained apart from `node_modules` and the `config/` directory.
 ```bash
 cp .env.example .env          # or leave LLM_PROVIDER=mock
 docker compose up -d --build
-# http://127.0.0.1:3001
+# http://127.0.0.1:3080
 ```
 
 The image runs as a non-root user (`uid 10001`), includes `git` (needed for
@@ -140,7 +140,7 @@ token in the URL and it is remembered in that browser:
 
 ```bash
 TOKEN=$(docker compose exec -T corpix cat /data/admin-token)
-echo "http://127.0.0.1:3001/?token=$TOKEN"
+echo "http://127.0.0.1:3080/?token=$TOKEN"
 ```
 
 The static UI and `/api/health` stay public so the page can load and the
@@ -162,18 +162,22 @@ it. Note the container has no `bwrap` binary unless you add it to the image.
 
 
 ```bash
-pnpm dev            # API on :3001, Vite UI on :5173
-# or serve the built UI from the API:
+pnpm dev            # API + built UI on http://127.0.0.1:3080
+# or serve the built UI from the compiled bundle:
 pnpm build
-pnpm --filter @corpix/server start   # http://127.0.0.1:3001
+pnpm start          # node dist/server.mjs on http://127.0.0.1:3080
 ```
+
+The server listens on **`http://127.0.0.1:3080`** (override with `PORT=...`).
+There is no separate UI dev port: `apps/web/vite.config.ts` proxies `/api` and
+`/ws` to the same origin, and the production build is served by the API itself.
 
 Open the UI, register a project (`POST /api/projects` or the Office tab once a
 project exists), then dispatch a goal. Settings are under the **Settings** tab
 and apply to the next run immediately.
 
 REST endpoints match the target design; the WebSocket is at
-`ws://127.0.0.1:3001/ws?runId=<id>&since=<seq>`.
+`ws://127.0.0.1:3080/ws?runId=<id>&since=<seq>`.
 
 ## Settings (no restart, not hardcoded)
 
@@ -188,6 +192,7 @@ Settings tab, `PATCH /api/settings`, or the CLI — no `.env` editing, no restar
 | Per-agent | model, max steps, **context tokens** and temperature for any role, overriding the tier default |
 | Limits | concurrency, steps per task, **context tokens per agent**, task timeout, tool output cap, max output tokens, **QA review rounds**, budget per goal, budget action |
 | Safety | approval mode, command sandbox (none / bwrap / docker) |
+| Mind | whether agents think for themselves, how often, which model, turns, memory |
 | Team | company name and the display name of every agent |
 | Git | worktree isolation on/off, integration branch name, worktrees directory |
 | Pricing | USD per million input/output/cached tokens per model |
@@ -258,7 +263,7 @@ Example patch:
 | `pnpm cli sandbox` | Show which command sandboxes are available |
 | `pnpm test` | Run the test suite |
 | `pnpm typecheck` | `tsc --noEmit` |
-| `pnpm dev` | Server and Vite UI together |
+| `pnpm dev` | Server (with the built UI) on `:3080` |
 
 ## QA review loop
 
@@ -460,42 +465,59 @@ that already exists in the run log, so what you see is always what happened.
 | `tool.called` with `write_file` / `edit_file` | typing pose; the desk monitor lights in the role colour |
 | `tool.called` with `run_command` | terminal `>_` indicator |
 | `message.sent` | speech bubble on the sender |
+| `mind.decided` | the agent's own model chose an action: walk, sit, smoke, talk |
+| `mind.said` | a line the agent decided to say out loud |
+| `mind.conversation.*` | two-sided exchange, one line per model turn |
 | `task.completed` / `task.failed` | wave and a summary bubble, or a red flag |
 | `review.started` | the QA agent walks to its desk and announces the review |
 | `run.finished` | everyone returns to idle |
 
-When nobody has a task, agents still have a life. Each one keeps five needs —
-focus, social, caffeine, restlessness and stress — that drift over time and rise
-faster while working. The strongest need decides what it does next, so two agents
-with the same role behave differently and the same agent does not loop on coffee:
+When nobody has a task, agents still have a life — and that life is **not
+scripted**. There is no needs table deciding "coffee because caffeine is high".
+Each idle agent gets its own model turn (`POST /api/mind` in the server) with its
+persona, mood, memories, opinions of the colleagues present, the real goal and
+the files that changed, and answers a single question: what do you do now?
 
-| Need | Behaviour |
-|---|---|
-| caffeine | walk to the coffee machine or the water cooler |
-| social | pair up with a colleague and talk, or head to the meeting room |
-| stress | take a smoke break by the ashtray, or stare out the window |
-| restlessness | walk a lap, stretch, fidget |
-| focus | rest at the desk, tidy it, or sketch at the whiteboard |
+It can choose coffee, water, a smoke outside, the whiteboard, the window, the
+meeting room, pacing, tidying, working, or walking over to talk to a specific
+colleague. It can also choose to do nothing. The office only renders the answer:
+`mind.decided` moves the body and sets the label, `mind.said` queues the bubble.
 
-Conversations are turn-based, not simultaneous. Two (sometimes three) idle agents
-walk to the meeting room, sit around the table facing each other, and take turns.
-A global speech channel allows **one bubble at a time**: the speaker gets the
-bubble and a "talking to …" line, listeners stay silent, and the next line is only
-queued once the previous one has been read.
+**Personality is state, not rules.** Every agent keeps:
 
-The topic is chosen from the roles present — API contract, tests, deploy, docs,
-planning, review, debugging, design — and the lines reference the real run: the
-goal, task titles and changed files (for example "Does the endpoint from
-`server/src/todo.ts` match the contract?"). Each exchange is 5–6 turns, paced so a
-line is not cut off. Only one conversation runs at a time, with a cooldown
-afterwards, so the office never turns into a wall of text.
+- a **mood** (valence, energy and its own word: "grumpy", "smug", "wiped out"),
+- a short **memory** of what happened to it,
+- **opinions** of each colleague, with a sentiment and a sentence.
 
-A small line above the head always says what the agent is doing, and silence is
-part of it: constant chatter reads as noise, not personality.
+Those are fed back into the next prompt, so a person who was interrupted keeps
+being annoyed about it, and someone who got help warms to the helper.
 
-Behaviour is seeded per agent id and each activity is applied to the needs, so
-the office drifts naturally instead of looping. `?debug=1` exposes needs and mood
-through `window.__corpixOffice.debugAgents()`.
+Conversations are two-sided. When an agent chooses `talk` with a target, the
+runner alternates model turns between the two people: the second model sees the
+first line's actual text, so it answers *that*, not a template. A boss can demand
+a verdict and QA can refuse to give one. A backend engineer can tell DevOps the
+entrypoint script is unpinned and DevOps can concede. Turns are capped by
+`mind.maxTurns` and paced to reading speed.
+
+A global speech channel still guarantees **one bubble at a time**: the speaker
+gets the bubble and a "talking to …" line, listeners stay silent, and the next
+line is only queued once the previous one has been read.
+
+![The Minds tab](docs/screenshots/minds.png)
+
+The **Minds** tab shows the inner life as the agents themselves describe it:
+current thought, mood, what they are doing, what they remember, and what they
+think of each other. You can type to any agent and it answers in character —
+including telling you it is not in the mood.
+
+Everything is configurable under **Settings → Mind**: on/off, seconds between
+decisions, how many agents think at once, the model (empty = cheap model), token
+budget, temperature, turns per conversation and memory size. With the provider
+set to `mock` the same protocol is answered by a deterministic demo mind, so the
+office is never dead offline.
+
+`?debug=1` exposes mood, thought, doing and memories through
+`window.__corpixOffice.debugAgents()`.
 
 Implementation notes:
 

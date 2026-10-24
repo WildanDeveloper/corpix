@@ -95,6 +95,16 @@ export class SpeechQueue {
   }
 }
 
+/**
+ * How long a line stays readable. Roughly 14 characters per second, with a
+ * floor so "ok" is not gone before the eye lands on it and a ceiling so a
+ * monologue does not lock the whole office.
+ */
+export function lineDuration(text: string): number {
+  const characters = Math.max(2, text.trim().length);
+  return Math.min(6.5, Math.max(2.6, 1.1 + characters / 14));
+}
+
 /** Stagger: a conversation should not fire every line at once. */
 export function nextLineDelay(index: number, base = 2.4): number {
   return base + index * 0.9;

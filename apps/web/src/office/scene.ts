@@ -2,6 +2,7 @@ import {
   Application,
   Container,
   Graphics,
+  Rectangle,
   Sprite,
   Text,
   type Ticker,
@@ -37,26 +38,8 @@ import {
   type Point,
 } from "./layout";
 import { findPath, simplifyPath } from "./pathfinding";
-import {
-  buildConversation,
-  conversationCooldown,
-  lineDuration,
-  type ConversationLine,
-} from "./conversation";
-import { SpeechQueue } from "./speech";
-import {
-  applyActivity,
-  destinationFor,
-  driftNeeds,
-  hashString,
-  moodColor,
-  moodWord,
-  mulberry32,
-  planIdle,
-  seededNeeds,
-  type IdleActivity,
-  type NeedState,
-} from "./behavior";
+import { SpeechQueue, lineDuration } from "./speech";
+import { hashString, moodColor, moodTint, mulberry32 } from "./behavior";
 import { frameTexture, type Facing, type Pose } from "./sprites";
 
 type WalkPurpose =
@@ -108,23 +91,33 @@ interface OfficeAgent {
   purpose: WalkPurpose;
   /** Current line shown above the head. */
   activity: string;
-  idleFor: number;
-  idleRound: number;
-  lastIdle: IdleActivity | null;
-  behaviour: IdleActivity | null;
-  behaviourTimer: number;
-  needs: NeedState;
-  recentActivities: IdleActivity[];
+  /** What this person is like right now, decided by the model. */
+  mind: MindView;
+  /** Seconds left before the current decision goes stale. */
+  mindTimer: number;
   inConversation: boolean;
+  hovered: boolean;
   smokeTimer: number;
 }
 
+/** The part of an agent's inner life the office can see. */
+export interface MindView {
+  mood: { valence: number; arousal: number; label: string };
+  thought: string;
+  doing: string;
+  /** Last thing this person said out loud. */
+  said: string;
+  memories: string[];
+}
+
 interface ActiveConversation {
-  topic: string;
+  id: string;
   participants: string[];
-  lines: ConversationLine[];
+  /** Lines that arrived from the server, in order. */
+  lines: Array<{ agentId: string; text: string }>;
   index: number;
   nextAt: number;
+  ended: boolean;
 }
 
 export interface SceneOptions {
@@ -233,7 +226,7 @@ export class OfficeScene {
         break;
       }
       case "tool.called": {
-        const agent = this.agents.get(String(payload.agentId ?? ""));
+        const agent = this.agentFor(String(payload.agentId ?? ""));
         if (!agent) break;
         agent.tool = String(payload.tool ?? "");
         agent.toolDetail = describeTool(agent.tool, payload.input);
@@ -241,24 +234,24 @@ export class OfficeScene {
         break;
       }
       case "message.sent": {
-        const agent = this.agents.get(String(payload.from ?? ""));
+        const agent = this.agentFor(String(payload.from ?? ""));
         if (agent && typeof payload.text === "string") this.say(agent, payload.text, 3.5);
         break;
       }
       case "task.completed": {
-        const agent = this.agents.get(String(payload.agentId ?? ""));
+        const agent = this.agentFor(String(payload.agentId ?? ""));
         if (!agent) break;
         this.setState(agent, "done");
         if (typeof payload.summary === "string") this.say(agent, payload.summary, 3);
         break;
       }
       case "task.failed": {
-        const agent = this.agents.get(String(payload.agentId ?? ""));
+        const agent = this.agentFor(String(payload.agentId ?? ""));
         if (agent) this.setState(agent, "error");
         break;
       }
       case "approval.requested": {
-        const agent = this.agents.get(String(payload.agentId ?? ""));
+        const agent = this.agentFor(String(payload.agentId ?? ""));
         if (agent) this.setState(agent, "blocked");
         break;
       }
@@ -270,6 +263,36 @@ export class OfficeScene {
         }
         break;
       }
+      case "mind.decided": {
+        const agent = this.ensure(
+          String(payload.agentId ?? ""),
+          String(payload.role ?? "backend"),
+          instant,
+        );
+        if (agent) this.applyDecision(agent, payload);
+        break;
+      }
+      case "mind.said": {
+        const agent = this.agentFor(String(payload.agentId ?? ""));
+        if (!agent || typeof payload.text !== "string") break;
+        agent.mind.said = payload.text;
+        this.speech.enqueue({
+          agentId: agent.id,
+          text: payload.text,
+          priority: 20,
+          duration: lineDuration(payload.text),
+        });
+        break;
+      }
+      case "mind.conversation.started":
+        this.beginConversation(payload);
+        break;
+      case "mind.conversation.line":
+        this.pushConversationLine(payload);
+        break;
+      case "mind.conversation.ended":
+        this.endConversation();
+        break;
       case "run.finished":
       case "run.failed":
       case "run.cancelled": {
@@ -305,36 +328,44 @@ export class OfficeScene {
   /** Snapshot for `?debug=1` and for screenshot tests. */
   debugAgents(): Array<{
     id: string;
+    name: string;
     role: string;
     state: AgentState;
     activity: string;
-    mood: string;
     tile: Point;
     path: number;
-    needs: NeedState;
+    mood: MindView["mood"];
+    thought: string;
+    doing: string;
+    said: string;
+    memories: string[];
   }> {
     return [...this.agents.entries()].map(([id, agent]) => ({
       id,
+      name: agent.name,
       role: agent.role,
       state: agent.state,
       activity: agent.activity,
-      mood: moodWord(agent.needs),
+      mood: { ...agent.mind.mood },
+      thought: agent.mind.thought,
+      doing: agent.mind.doing,
+      said: agent.mind.said,
+      memories: [...agent.mind.memories],
       tile: { ...agent.tile },
       path: agent.path.length,
-      needs: { ...agent.needs },
     }));
   }
 
   /** Debug snapshot for `?debug=1` and screenshot tests. */
   debugState(): {
-    conversation: { topic: string; index: number; participants: string[] } | null;
+    conversation: { id: string; index: number; participants: string[] } | null;
     bubbles: string[];
     pendingSpeech: number;
   } {
     return {
       conversation: this.conversation
         ? {
-            topic: this.conversation.topic,
+            id: this.conversation.id,
             index: this.conversation.index,
             participants: [...this.conversation.participants],
           }
@@ -355,9 +386,10 @@ export class OfficeScene {
 
   private ensure(agentId: string, role: string, instant = false): OfficeAgent | null {
     if (!agentId) return null;
-    // There can be several Boss agent ids (planning, retries); they all map to
-    // one body so the office never shows two CEOs.
-    const canonical = role === "boss" ? "boss" : (this.aliases.get(agentId) ?? agentId);
+    // A role has exactly one body. Runtime agents get ids like `backend_3fmfed`
+    // while the mind speaks as `backend`; keying by role is what stops one
+    // person from appearing twice in the same office.
+    const canonical = this.aliases.get(agentId) ?? role;
     const existing = this.agents.get(canonical);
     if (existing) {
       if (agentId !== canonical) this.aliases.set(agentId, canonical);
@@ -395,7 +427,9 @@ export class OfficeScene {
       },
     });
     status.anchor.set(0.5, 1);
-    status.position.set(0, -68);
+    // Alternate the status line height per role, so two people standing next to
+    // each other never print their labels on top of one another.
+    status.position.set(0, -68 - (hashString(role) % 2 === 0 ? 0 : 11));
     root.addChild(status);
 
     const start = nearestWalkable(ENTRANCE);
@@ -425,16 +459,30 @@ export class OfficeScene {
       home: desk.stand,
       purpose: "desk",
       activity: "waiting for a task",
-      idleFor: 0,
-      idleRound: 0,
-      lastIdle: null,
-      behaviour: null,
-      behaviourTimer: 0,
-      needs: seededNeeds(canonical),
-      recentActivities: [],
+      mind: {
+        mood: { valence: 0, arousal: 0, label: "neutral" },
+        thought: "",
+        doing: "",
+        said: "",
+        memories: [],
+      },
+      mindTimer: 0,
       inConversation: false,
+      hovered: false,
       smokeTimer: 0,
     };
+    root.eventMode = "static";
+    root.cursor = "pointer";
+    root.hitArea = new Rectangle(-19, -50, 38, 50);
+    root.on("pointerover", () => {
+      agent.hovered = true;
+      this.updateStatus(agent);
+    });
+    root.on("pointerout", () => {
+      agent.hovered = false;
+      this.updateStatus(agent);
+    });
+
     this.agents.set(canonical, agent);
     this.activity(agent, "waiting for a task", 0x9fb3c8);
     this.facingTexture(agent);
@@ -442,12 +490,20 @@ export class OfficeScene {
     return agent;
   }
 
+  /** Resolve any id (runtime agent id, role id, alias) to the one body. */
+  private agentFor(id: string): OfficeAgent | undefined {
+    return (
+      this.agents.get(id) ??
+      this.agents.get(this.aliases.get(id) ?? "") ??
+      this.agents.get(roleFromAgentId(id))
+    );
+  }
+
   private sendToDesk(agent: OfficeAgent, instant = false): void {
     const desk = deskFor(agent.role);
     const target = this.reserveStand(agent, desk.stand);
     agent.home = target;
-    agent.behaviour = null;
-    agent.behaviourTimer = 0;
+    agent.mindTimer = 0;
     this.walkTo(agent, target, desk.facing, instant, "desk");
   }
 
@@ -522,9 +578,7 @@ export class OfficeScene {
     agent.tool = tool ?? agent.tool;
     agent.status.text = "";
     agent.status.style.fill = 0xffffff;
-    agent.behaviour = null;
-    agent.behaviourTimer = 0;
-    agent.idleFor = 0;
+    agent.mindTimer = 0;
 
     switch (state) {
       case "thinking":
@@ -565,24 +619,36 @@ export class OfficeScene {
    */
   private activity(agent: OfficeAgent, text: string, color: number): void {
     agent.activity = text;
-    agent.status.text = text.length > 34 ? `${text.slice(0, 31)}…` : text;
     agent.status.style.fill = color;
+    this.updateStatus(agent);
   }
 
   /**
-   * Idle behaviour: when an agent has no task it still has a life. Every few
-   * seconds it picks a small activity, occasionally walks to the coffee machine
-   * or wanders, and says something short. Deterministic per agent so screenshots
-   * stay reproducible.
+   * Idle agents at their desk show only their name: four identical "waiting for
+   * a task" lines overlapping above neighbouring desks reads as noise. The
+   * status returns for real work, conversations, and on hover.
+   */
+  private updateStatus(agent: OfficeAgent): void {
+    const generic =
+      agent.state === "idle" &&
+      (agent.activity === "" || agent.activity === "waiting for a task" || agent.activity === "at the desk");
+    const text = agent.activity;
+    agent.status.text =
+      generic && !agent.hovered ? "" : text.length > 32 ? `${text.slice(0, 29)}…` : text;
+  }
+
+  /**
+   * Idle life.
+   *
+   * Nothing here decides what a person does. The server asks each agent's model
+   * "what do you want to do now?" and streams back the answer; this method only
+   * turns that answer into walking, sitting, smoking and talking. When a
+   * decision is missing or stale the agent simply stays where it is, which is
+   * also a legitimate thing for a person to do.
    */
   private driveIdle(agent: OfficeAgent, delta: number): void {
-    // Needs always drift; work raises stress and drains focus.
-    const working = agent.state === "working" || agent.state === "thinking";
-    agent.needs = driftNeeds(agent.needs, delta, working);
-
-    if (agent.state !== "idle" || agent.path.length > 0) return;
-
-    agent.idleFor += delta;
+    if (agent.state !== "idle") return;
+    if (agent.mindTimer > 0) agent.mindTimer -= delta;
 
     // Smoking is a timed state: stand outside, puff, come back.
     if (agent.smokeTimer > 0) {
@@ -597,179 +663,180 @@ export class OfficeScene {
 
     // Agents inside a conversation are driven by advanceConversation().
     if (agent.inConversation) return;
+    if (agent.path.length > 0) return;
 
-    if (agent.behaviourTimer > 0) {
-      agent.behaviourTimer -= delta;
-      if (agent.behaviourTimer <= 0) {
-        const finished = agent.behaviour;
-        agent.behaviour = null;
-        if (finished) {
-          agent.needs = applyActivity(agent.needs, finished);
-          this.rememberActivity(agent, finished);
-        }
-        if (agent.purpose === "home" || agent.purpose === "desk") {
-          agent.pose = "sit";
-          this.facingTexture(agent);
-          this.activity(agent, "at the desk", 0x9fb3c8);
-        } else {
-          this.walkTo(agent, agent.home, undefined, false, "home");
-          this.activity(agent, "heading back", 0x9fb3c8);
-        }
+    // The decision expired: the person settles instead of looping a script.
+    if (agent.mindTimer <= 0 && agent.mind.doing.length > 0) {
+      agent.mind = { ...agent.mind, doing: "" };
+      if (agent.purpose !== "desk" && agent.purpose !== "home") {
+        this.walkTo(agent, agent.home, undefined, false, "home");
+        this.activity(agent, "drifting back to the desk", 0x9fb3c8);
+      } else {
+        agent.pose = "sit";
+        this.facingTexture(agent);
+        this.activity(agent, "at the desk", 0x9fb3c8);
       }
+    }
+  }
+
+  /** Apply one decision from an agent's own model. */
+  private applyDecision(
+    agent: OfficeAgent,
+    decision: {
+      action?: unknown;
+      place?: unknown;
+      label?: unknown;
+      say?: unknown;
+      seconds?: unknown;
+      thought?: unknown;
+      mood?: unknown;
+    },
+  ): void {
+    const action = typeof decision.action === "string" ? decision.action : "sit";
+    const place = typeof decision.place === "string" ? decision.place : "desk";
+    const label = typeof decision.label === "string" ? decision.label : action;
+    const seconds =
+      typeof decision.seconds === "number" && Number.isFinite(decision.seconds)
+        ? Math.min(120, Math.max(3, decision.seconds))
+        : 14;
+
+    if (typeof decision.thought === "string") agent.mind.thought = decision.thought;
+    if (decision.mood && typeof decision.mood === "object") {
+      const mood = decision.mood as { valence?: unknown; arousal?: unknown; label?: unknown };
+      agent.mind.mood = {
+        valence: typeof mood.valence === "number" ? mood.valence : agent.mind.mood.valence,
+        arousal: typeof mood.arousal === "number" ? mood.arousal : agent.mind.mood.arousal,
+        label: typeof mood.label === "string" ? mood.label : agent.mind.mood.label,
+      };
+      agent.label.style.fill = moodTint(agent.mind.mood);
+    }
+    agent.mind.doing = label;
+    agent.mindTimer = seconds;
+
+    // A real task always wins over an idle decision.
+    if (agent.state !== "idle") return;
+    if (agent.inConversation) return;
+
+    // "talk" is started by the server, which owns the other side's model too.
+    // Walk towards the meeting room so the intent is visible; if the other side
+    // never becomes free, the decision expires and the agent drifts back.
+    if (action === "talk" || action === "chat") {
+      const spot = MEETING_SPOTS[Math.floor(mulberry32(hashString(agent.id))() * MEETING_SPOTS.length)];
+      if (spot && !agent.inConversation) this.walkTo(agent, spot, undefined, false, "chat");
+      this.activity(agent, label || "looking for someone", 0x9fb3c8);
       return;
     }
 
-    // Wait a moment after arriving so movement reads clearly.
-    if (agent.idleFor < 2.5) return;
-
-    agent.idleRound += 1;
-    const round = agent.idleRound;
-    const plan = planIdle(agent.id, agent.needs, round, agent.recentActivities, {
-      allowSocial: this.socialAvailable(agent),
-    });
-    agent.behaviour = plan.activity;
-    agent.behaviourTimer = plan.duration;
-    agent.idleFor = 0;
-
-    const random = mulberry32(hashString(`${agent.id}:${round}:dest`));
-
-    // Conversation: only one runs at a time, and only after a cooldown, so the
-    // office never shows two overlapping chats.
-    if (
-      (plan.activity === "pair-chat" || plan.activity === "chat") &&
-      !this.conversation &&
-      this.conversationCooldown <= 0
-    ) {
-      const partner = this.findChatPartner(agent);
-      if (partner) {
-        this.startConversation(agent, partner);
-        return;
-      }
-    }
-
-    const destination = destinationFor(
-      plan.place,
-      agent.home,
-      {
-        coffee: BREAK_SPOT,
-        water: WATER_SPOT,
-        smoke: SMOKE_SPOT,
-        whiteboard: WHITEBOARD_SPOT,
-        window: WINDOW_SPOT,
-        meeting: MEETING_SPOTS,
-      },
-      random,
-    );
-
-    if (destination && isWalkable(destination.x, destination.y)) {
-      const purpose: WalkPurpose =
-        plan.place === "meeting"
-          ? "meeting"
-          : plan.place === "wander"
-            ? "wander"
-            : (plan.place as WalkPurpose);
-      this.walkTo(agent, destination, undefined, false, purpose);
-      this.activity(agent, plan.label, 0x9fb3c8);
-      if (plan.line) this.say(agent, plan.line, plan.duration);
+    const destination = this.placeFor(place, agent);
+    if (destination) {
+      this.walkTo(agent, destination.point, undefined, false, destination.purpose);
+      this.activity(agent, label, 0x9fb3c8);
+      if (place === "smoke") agent.smokeTimer = seconds;
       return;
     }
 
-    // Act in place: face a sensible direction and show the label.
-    agent.pose = plan.activity === "desk-tidy" || plan.activity === "fidget" ? "idle" : "sit";
+    // Stay in place: sit, type, stare, stretch.
+    agent.pose = action === "stretch" || action === "pace" || action === "tidy" ? "idle" : "sit";
     this.facingTexture(agent);
-    this.activity(agent, plan.label, 0x9fb3c8);
-    if (plan.line) this.say(agent, plan.line, plan.duration);
+    this.activity(agent, label, 0x9fb3c8);
   }
 
-  private rememberActivity(agent: OfficeAgent, activity: IdleActivity): void {
-    agent.recentActivities = [activity, ...agent.recentActivities].slice(0, 3);
+  /** Map a place name from the model onto a walkable tile. */
+  private placeFor(
+    place: string,
+    agent: OfficeAgent,
+  ): { point: Point; purpose: WalkPurpose } | null {
+    const random = mulberry32(hashString(`${agent.id}:${place}:${Math.floor(agent.root.x)}`));
+    const anchors: Record<string, Point> = {
+      coffee: BREAK_SPOT,
+      water: WATER_SPOT,
+      smoke: SMOKE_SPOT,
+      whiteboard: WHITEBOARD_SPOT,
+      window: WINDOW_SPOT,
+    };
+    const fixed = anchors[place];
+    if (fixed) {
+      return {
+        point: fixed,
+        purpose:
+          place === "coffee" || place === "water" || place === "smoke" || place === "whiteboard" || place === "window"
+            ? (place as WalkPurpose)
+            : "wander",
+      };
+    }
+    if (place === "meeting") {
+      const spot = MEETING_SPOTS[Math.floor(random() * MEETING_SPOTS.length)];
+      return spot ? { point: spot, purpose: "meeting" } : null;
+    }
+    if (place === "wander" || place === "server-room" || place === "break-room") {
+      const angle = random() * Math.PI * 2;
+      const radius = 2 + Math.floor(random() * 3);
+      const point = {
+        x: agent.home.x + Math.round(Math.cos(angle) * radius),
+        y: agent.home.y + Math.round(Math.sin(angle) * radius),
+      };
+      return isWalkable(point.x, point.y) ? { point, purpose: "wander" } : null;
+    }
+    return null;
   }
 
-  /** Social activities need at least one other idle agent. */
-  private socialAvailable(agent: OfficeAgent): boolean {
-    return [...this.agents.values()].some(
-      (other) =>
-        other.id !== agent.id &&
-        other.state === "idle" &&
-        other.path.length === 0 &&
-        !other.inConversation,
-    );
-  }
-
-  private findChatPartner(agent: OfficeAgent): OfficeAgent | null {
-    const candidates = [...this.agents.values()].filter(
-      (other) =>
-        other.id !== agent.id &&
-        other.state === "idle" &&
-        other.path.length === 0 &&
-        !other.inConversation &&
-        Math.abs(other.tile.x - agent.tile.x) + Math.abs(other.tile.y - agent.tile.y) <= 9,
-    );
-    if (candidates.length === 0) return null;
-    const random = mulberry32(hashString(`${agent.id}:${agent.idleRound}:partner`));
-    return candidates[Math.floor(random() * candidates.length)] ?? null;
-  }
-
-  /**
-   * Start a turn-based conversation between two or three agents. One speaker at a
-   * time, lines drawn from the topic that matches the roles present, referencing
-   * the actual goal and files of this run.
-   */
-  private startConversation(initiator: OfficeAgent, partner: OfficeAgent): void {
-    const participants = [initiator, partner];
-    // A third agent standing nearby may join, which is how real offices work.
-    const third = [...this.agents.values()].find(
-      (other) =>
-        other.id !== initiator.id &&
-        other.id !== partner.id &&
-        other.state === "idle" &&
-        other.path.length === 0 &&
-        !other.inConversation &&
-        Math.abs(other.tile.x - initiator.tile.x) + Math.abs(other.tile.y - initiator.tile.y) <= 4 &&
-        hashString(`${other.id}:${initiator.idleRound}:join`) % 3 === 0,
-    );
-    if (third) participants.push(third);
-
-    const script = buildConversation(
-      participants.map((participant) => ({
-        id: participant.id,
-        role: participant.role,
-        name: participant.name,
-      })),
-      this.context,
-      initiator.idleRound,
-    );
-    if (script.lines.length === 0) return;
+  /** A conversation is started by the server, which generates both sides. */
+  private beginConversation(payload: {
+    conversationId?: unknown;
+    participants?: unknown;
+  }): void {
+    const resolved = Array.isArray(payload.participants)
+      ? payload.participants
+          .map((entry) => {
+            const row = entry as { agentId?: unknown; role?: unknown };
+            const role = typeof row.role === "string" ? row.role : null;
+            if (role) return this.ensure(role, role);
+            if (typeof row.agentId === "string") {
+              return this.agentFor(row.agentId) ?? this.ensure(row.agentId, roleFromAgentId(row.agentId));
+            }
+            return null;
+          })
+          .filter((agent): agent is OfficeAgent => Boolean(agent))
+      : [];
+    // One body per role, so a pair can never be the same person twice.
+    const participants = [...new Map(resolved.map((agent) => [agent.id, agent])).values()];
+    if (participants.length < 2) return;
 
     this.conversation = {
-      topic: script.topic,
-      participants: participants.map((participant) => participant.id),
-      lines: script.lines,
+      id: typeof payload.conversationId === "string" ? payload.conversationId : `chat-${Date.now()}`,
+      participants: participants.map((agent) => agent.id),
+      lines: [],
       index: 0,
       nextAt: 0,
+      ended: false,
     };
-    this.conversationCooldown = conversationCooldown(initiator.idleRound + participants.length);
-    // Clear background chatter so the first line is heard, not queued behind it.
+    // The group owns the speech channel while it lasts.
     this.speech.dropBelow(50);
 
-    const base = hashString(participants.map((participant) => participant.id).join(":")) % MEETING_SPOTS.length;
+    const base = hashString(participants.map((agent) => agent.id).join(":")) % MEETING_SPOTS.length;
     participants.forEach((participant, index) => {
       const spot = MEETING_SPOTS[(base + index * 2) % MEETING_SPOTS.length];
       if (spot) this.walkTo(participant, spot, undefined, false, "chat");
-    });
-
-    for (const participant of participants) {
       participant.inConversation = true;
-      participant.behaviour = "pair-chat";
-      participant.behaviourTimer = 999;
+      participant.mindTimer = 999;
       participant.pose = "idle";
-      const other = participants.find((candidate) => candidate.id !== participant.id);
-      if (other) {
-        participant.facing = other.tile.x >= participant.tile.x ? "right" : "left";
-      }
       this.facingTexture(participant);
       this.activity(participant, "heading to a chat", 0x9fb3c8);
-    }
+    });
+  }
+
+  /** A line arrived from the speaker's own model. Queue it, do not show it yet. */
+  private pushConversationLine(payload: { agentId?: unknown; text?: unknown; name?: unknown }): void {
+    const conversation = this.conversation;
+    if (!conversation) return;
+    if (typeof payload.agentId !== "string" || typeof payload.text !== "string") return;
+    conversation.lines.push({ agentId: payload.agentId, text: payload.text });
+  }
+
+  private endConversation(): void {
+    const conversation = this.conversation;
+    if (!conversation) return;
+    conversation.ended = true;
   }
 
   /** Advance the active conversation: queue the next line, then finish. */
@@ -778,13 +845,12 @@ export class OfficeScene {
     if (!conversation) return;
 
     const participants = conversation.participants
-      .map((id) => this.agents.get(id))
+      .map((id) => this.agentFor(id))
       .filter((agent): agent is OfficeAgent => Boolean(agent));
     // Wait until the whole group is seated; a line while walking looks wrong.
     if (participants.length < 2 || participants.some((agent) => agent.path.length > 0)) return;
 
-    // Pace lines to the speech channel: one queued line at a time keeps the
-    // conversation readable and stops a backlog from forming.
+    // One queued line at a time keeps the exchange readable.
     if (this.speech.pending > 0) return;
 
     conversation.nextAt -= delta;
@@ -792,22 +858,16 @@ export class OfficeScene {
 
     const line = conversation.lines[conversation.index];
     if (!line) {
-      // Do not tear down the group while a queued line is still waiting to be
-      // shown, otherwise the last sentence disappears mid-air.
-      if (this.speech.pending > 0) {
-        conversation.nextAt = 0.4;
-        return;
-      }
-      this.finishConversation();
+      if (conversation.ended) this.finishConversation();
+      else conversation.nextAt = 0.5;
       return;
     }
-    const speaker = this.agents.get(line.speakerId);
+    const speaker = this.agentFor(line.agentId);
     if (!speaker) {
-      this.finishConversation();
+      conversation.index += 1;
       return;
     }
-    // Queued, not shown: the global speech channel decides when it appears, so
-    // two agents can never talk over each other.
+
     this.speech.enqueue({
       agentId: speaker.id,
       text: line.text,
@@ -815,14 +875,14 @@ export class OfficeScene {
       duration: lineDuration(line.text),
       tag: "conversation",
     });
-    const speakerName = speaker.name;
+    speaker.mind.said = line.text;
+
     const otherName = participants.find((participant) => participant.id !== speaker.id)?.name ?? "the team";
     for (const participant of participants) {
       if (participant.id === speaker.id) {
         this.activity(participant, `talking to ${otherName}`, 0xffd75e);
       } else {
-        // Listeners stay quiet: only one status line in a conversation, so the
-        // labels never overlap and the turn is obvious.
+        // Listeners stay quiet so labels never overlap and the turn is obvious.
         this.activity(participant, "", 0x7f8c9b);
       }
     }
@@ -836,13 +896,10 @@ export class OfficeScene {
     this.conversation = null;
     if (!conversation) return;
     for (const id of conversation.participants) {
-      const agent = this.agents.get(id);
+      const agent = this.agentFor(id);
       if (!agent) continue;
       agent.inConversation = false;
-      agent.behaviour = null;
-      agent.behaviourTimer = 0;
-      agent.needs = applyActivity(agent.needs, "pair-chat");
-      this.rememberActivity(agent, "pair-chat");
+      agent.mindTimer = 0;
       this.activity(agent, "heading back", 0x9fb3c8);
       this.walkTo(agent, agent.home, undefined, false, "home");
     }
@@ -905,7 +962,7 @@ export class OfficeScene {
       .lineTo(13, height + 5)
       .fill(0xf0f4f8);
     bubble.addChild(box, label);
-    bubble.position.set(-width / 2, -96 - height);
+    bubble.position.set(-width / 2, -96 - height - (hashString(agent.role) % 2 === 0 ? 0 : 11));
     agent.root.addChild(bubble);
     agent.bubble = bubble;
     agent.bubbleTimer = seconds;
@@ -940,7 +997,7 @@ export class OfficeScene {
     });
     const granted = this.speech.tick(delta);
     if (granted) {
-      const speaker = this.agents.get(granted.agentId);
+      const speaker = this.agentFor(granted.agentId);
       if (speaker) {
         if (this.activeBubbleAgent && this.activeBubbleAgent !== granted.agentId) {
           this.clearBubble(this.activeBubbleAgent);
@@ -1335,21 +1392,39 @@ export class OfficeScene {
             .rect(x + 16, y + 15, 2, 2)
             .fill(0xff8a5c);
           break;
-        case "whiteboard":
+        case "whiteboard": {
+          // A frame, a slightly cool board, and readable scribbles: a plain white
+          // rectangle reads as a rendering bug at this zoom level.
+          const width = (prop.w ?? 1) * TILE - 6;
           art
-            .rect(x + 2, y + 8, (prop.w ?? 1) * TILE - 4, 20)
-            .fill(0xe8edf2)
-            .rect(x + 2, y + 8, (prop.w ?? 1) * TILE - 4, 2)
-            .fill(0xb8c4d0)
-            .rect(x + 8, y + 14, 26, 1)
+            .rect(x + 3, y + 7, width, 22)
+            .fill(0x8f9aa6)
+            .rect(x + 4, y + 8, width - 2, 20)
+            .fill(0xdfe7ee)
+            .rect(x + 4, y + 26, width - 2, 2)
+            .fill(0xa9b4c0)
+            // Scribbles: a heading, two bullet lines and a small diagram.
+            .rect(x + 7, y + 11, 22, 2)
+            .fill(0x2f4a63)
+            .rect(x + 7, y + 16, 30, 1)
             .fill(0x3f7fd0)
-            .rect(x + 8, y + 18, 18, 1)
+            .rect(x + 7, y + 19, 24, 1)
             .fill(0x3f9e6b)
-            .rect(x + 8, y + 22, 22, 1)
+            .rect(x + 7, y + 22, 27, 1)
             .fill(0xd07a3f)
-            .rect(x + 30, y + 24, 4, 2)
-            .fill(0x9b5fc0);
+            .rect(x + 44, y + 15, 10, 1)
+            .fill(0x9b5fc0)
+            .rect(x + 48, y + 12, 2, 7)
+            .fill(0x9b5fc0)
+            // Tray with two markers.
+            .rect(x + 8, y + 28, 12, 2)
+            .fill(0x6d7885)
+            .rect(x + 10, y + 27, 5, 1)
+            .fill(0x3f7fd0)
+            .rect(x + 17, y + 27, 4, 1)
+            .fill(0xd07a3f);
           break;
+        }
         case "window":
           art
             .rect(x + 2, y + 6, (prop.w ?? 1) * TILE - 4, 22)

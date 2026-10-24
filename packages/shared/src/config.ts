@@ -67,7 +67,7 @@ export const EnvSchema = z.object({
   SANDBOX: z.enum(["none", "bwrap", "docker"]).default("bwrap"),
   SANDBOX_IMAGE: z.string().default("node:22-bookworm-slim"),
   HOST: z.string().default("127.0.0.1"),
-  PORT: z.coerce.number().int().positive().default(3001),
+  PORT: z.coerce.number().int().positive().default(3080),
   ADMIN_TOKEN: z.string().default(""),
   DATA_DIR: z.string().default("./data"),
   WORKSPACES_DIR: z.string().default("./workspaces"),

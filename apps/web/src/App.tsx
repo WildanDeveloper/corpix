@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useRef, useState, type ReactElement } from "react";
 import { api, formatUsd, getToken, setToken, wsUrl } from "./api";
+import { MindPanel } from "./MindPanel";
 import { SettingsPanel } from "./SettingsPanel";
 import { OfficeCanvas } from "./office/OfficeCanvas";
 import type { ApprovalRow, Project, RolesView, RunEvent, RunRecord, UsageResponse } from "./types";
 
-type Tab = "office" | "settings";
+type Tab = "office" | "minds" | "settings";
 
 export function App(): ReactElement {
   const [tab, setTab] = useState<Tab>("office");
@@ -41,6 +42,9 @@ export function App(): ReactElement {
         <button className={tab === "office" ? "active" : ""} onClick={() => setTab("office")}>
           Office
         </button>
+        <button className={tab === "minds" ? "active" : ""} onClick={() => setTab("minds")}>
+          Minds
+        </button>
         <button className={tab === "settings" ? "active" : ""} onClick={() => setTab("settings")}>
           Settings
         </button>
@@ -71,7 +75,15 @@ export function App(): ReactElement {
           </button>
         </div>
       )}
-      <main>{tab === "settings" ? <SettingsPanel key={token} /> : <OfficePanel key={token} />}</main>
+      <main>
+        {tab === "settings" ? (
+          <SettingsPanel key={token} />
+        ) : tab === "minds" ? (
+          <MindPanel key={token} />
+        ) : (
+          <OfficePanel key={token} />
+        )}
+      </main>
     </div>
   );
 }

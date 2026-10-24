@@ -3,7 +3,7 @@ services:
     build: .
     image: corpix:local
     ports:
-      - "127.0.0.1:3001:3001"
+      - "127.0.0.1:3080:3080"
     environment:
       # Set these in .env or here. Without a key, use LLM_PROVIDER=mock.
       LLM_PROVIDER: ${LLM_PROVIDER:-mock}

@@ -252,10 +252,10 @@ corepack enable            # makes the pinned pnpm version available
 pnpm install
 
 cp .env.example .env       # then edit .env: base URL, key and model IDs
-pnpm dev                   # server on :3001, web UI on :5173
+pnpm dev                   # server + built UI on :3080
 ```
 
-Open `http://localhost:5173`, type a goal in the top bar and press **Dispatch**.
+Open `http://localhost:3080`, type a goal in the top bar and press **Dispatch**.
 
 ### Demo mode (free)
 
@@ -308,7 +308,7 @@ APPROVAL_MODE=ask                   # ask | auto-safe | auto
 SANDBOX=none                        # none | docker
 SANDBOX_IMAGE=node:22-bookworm-slim
 HOST=127.0.0.1
-PORT=3001
+PORT=3080
 ADMIN_TOKEN=                        # required if HOST is not a loopback address
 
 # --- Paths and logging ------------------------------------------------------
@@ -806,7 +806,7 @@ SQLite, created and migrated by `pnpm db:migrate`. API keys are **never** stored
 
 ## API reference
 
-Base URL: `http://localhost:3001`. When `ADMIN_TOKEN` is set, send `Authorization: Bearer <token>`.
+Base URL: `http://localhost:3080`. When `ADMIN_TOKEN` is set, send `Authorization: Bearer <token>`.
 
 ### REST
 
@@ -829,7 +829,7 @@ Base URL: `http://localhost:3001`. When `ADMIN_TOKEN` is set, send `Authorizatio
 
 ### WebSocket
 
-`ws://localhost:3001/ws?runId=<id>&since=<seq>`
+`ws://localhost:3080/ws?runId=<id>&since=<seq>`
 
 - **Server to client:** event envelopes as described in the [Event protocol](#event-protocol).
 - **Client to server:** `{ "type": "approval.respond", "approvalId": "...", "decision": "approve" }` and `{ "type": "run.cancel" }`.

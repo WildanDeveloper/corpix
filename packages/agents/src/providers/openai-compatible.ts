@@ -43,6 +43,8 @@ interface ChatCompletionResponse {
   choices?: Array<{
     message?: {
       content?: string | null;
+      reasoning_content?: string | null;
+      reasoning?: string | null;
       tool_calls?: Array<{
         id: string;
         type?: string;
@@ -161,10 +163,11 @@ export class OpenAICompatibleProvider implements LLMProvider {
       } catch (error) {
         const aborted =
           (error as Error).name === "TimeoutError" || (error as Error).name === "AbortError";
+        const cause = (error as Error & { cause?: { code?: string; message?: string } }).cause;
         throw new ProviderError(
           aborted
             ? `Provider request timed out after ${this.timeoutMs}ms`
-            : `Network error calling provider: ${(error as Error).message}`,
+            : `Network error calling provider: ${(error as Error).message}${cause?.code ? ` (${cause.code})` : ""}${cause?.message && !cause.code ? ` (${cause.message})` : ""}`,
         );
       }
 
@@ -198,7 +201,7 @@ export class OpenAICompatibleProvider implements LLMProvider {
       if (style !== null && this.requestedStyle === "auto") {
         this.learnedStyle = style;
       }
-      return this.parseResponse((await response.json()) as ChatCompletionResponse);
+      return this.parseResponse(await readJson<ChatCompletionResponse>(response));
     }
 
     throw lastError ?? new ProviderError("Provider request failed");
@@ -223,9 +226,17 @@ export class OpenAICompatibleProvider implements LLMProvider {
       } satisfies ToolCallBlock);
     }
 
+    const reasoning =
+      typeof choice.message?.reasoning_content === "string"
+        ? choice.message.reasoning_content
+        : typeof choice.message?.reasoning === "string"
+          ? choice.message.reasoning
+          : undefined;
+
     return {
       content,
       stopReason: mapFinishReason(choice.finish_reason),
+      ...(reasoning && reasoning.length > 0 ? { reasoning } : {}),
       usage: {
         inputTokens: data.usage?.prompt_tokens ?? 0,
         outputTokens: data.usage?.completion_tokens ?? 0,
@@ -245,7 +256,7 @@ export class OpenAICompatibleProvider implements LLMProvider {
     if (!response.ok) {
       throw new ProviderError(`Provider returned ${response.status} for /models`, response.status);
     }
-    const data = (await response.json()) as { data?: Array<{ id?: unknown }> };
+    const data = await readJson<{ data?: Array<{ id?: unknown }> }>(response);
     return (data.data ?? [])
       .map((entry) => entry.id)
       .filter((id): id is string => typeof id === "string" && id.length > 0);
@@ -401,4 +412,81 @@ export function parseArguments(raw: string | undefined): unknown {
     }
   }
   return { __malformed: raw };
+}
+
+
+/**
+ * Some OpenAI-compatible gateways append a `data: [DONE]` trailer (or a stray
+ * SSE frame) to a non-streaming response. `response.json()` rejects the whole
+ * body in that case, so parse the first complete JSON value instead and ignore
+ * anything after it.
+ */
+async function readJson<T>(response: Response): Promise<T> {
+  const text = await response.text();
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    const trimmed = text.trim();
+    const end = lastBalancedJsonEnd(trimmed);
+    if (end > 0) {
+      try {
+        return JSON.parse(trimmed.slice(0, end)) as T;
+      } catch {
+        // Fall through to the SSE recovery below.
+      }
+    }
+    const recovered = fromSseFrames<T>(trimmed);
+    if (recovered !== null) return recovered;
+    throw new ProviderError(`Provider returned malformed JSON: ${trimmed.slice(0, 200)}`);
+  }
+}
+
+/** Index just past the closing brace of the first balanced JSON object. */
+function lastBalancedJsonEnd(text: string): number {
+  const start = text.indexOf("{");
+  if (start < 0) return -1;
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let i = start; i < text.length; i++) {
+    const char = text[i];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (char === "\\") escaped = true;
+      else if (char === '"') inString = false;
+      continue;
+    }
+    if (char === '"') inString = true;
+    else if (char === "{") depth++;
+    else if (char === "}") {
+      depth--;
+      if (depth === 0) return i + 1;
+    }
+  }
+  return -1;
+}
+
+/** Last resort: reassemble `data:` frames from a server-sent-events body. */
+function fromSseFrames<T>(text: string): T | null {
+  const frames = text
+    .split(/\r?\n/)
+    .filter((line) => line.startsWith("data:"))
+    .map((line) => line.slice(5).trim())
+    .filter((line) => line.length > 0 && line !== "[DONE]");
+  if (frames.length === 0) return null;
+  const merged = frames.map((frame) => {
+    try {
+      return JSON.parse(frame) as { choices?: Array<{ delta?: { content?: string }; message?: unknown }> };
+    } catch {
+      return null;
+    }
+  });
+  const content = merged
+    .map((frame) => frame?.choices?.[0]?.delta?.content ?? "")
+    .join("");
+  if (content.length === 0) {
+    const withMessage = merged.find((frame) => frame?.choices?.[0]?.message);
+    return (withMessage ?? null) as T | null;
+  }
+  return { choices: [{ message: { content } }] } as T;
 }

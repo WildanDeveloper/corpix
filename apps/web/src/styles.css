@@ -357,3 +357,105 @@ footer {
   margin: 0 4px;
   color: var(--text);
 }
+
+/* --- Minds: the inner life of the office ---------------------------------- */
+
+.mind-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.mind-card {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.mind-card.open {
+  border-color: var(--accent);
+}
+
+.mind-card header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.mind-mood {
+  border-radius: 999px;
+  padding: 2px 9px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.mind-thought {
+  font-style: italic;
+  line-height: 1.45;
+  margin: 0 0 6px;
+  min-height: 2.6em;
+}
+
+.mind-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.mind-talk {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.mind-talk input {
+  flex: 1;
+}
+
+.mind-detail {
+  margin-top: 12px;
+  border-top: 1px solid var(--border);
+  padding-top: 10px;
+}
+
+.mind-detail h4 {
+  margin: 8px 0 4px;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
+
+.mind-detail ul {
+  margin: 0;
+  padding-left: 18px;
+  line-height: 1.5;
+}
+
+.mind-reply {
+  border-left: 3px solid var(--accent);
+  padding: 8px 12px;
+  margin: 12px 0;
+  background: rgba(255, 255, 255, 0.03);
+  border-radius: 0 8px 8px 0;
+}
+
+.mind-reply p {
+  margin: 4px 0 0;
+}
+
+.small {
+  font-size: 12px;
+}
+
+.good {
+  color: #6fd7a0;
+}
+
+.bad {
+  color: #ff6b6b;
+}

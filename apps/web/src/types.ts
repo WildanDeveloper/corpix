@@ -48,6 +48,29 @@ export interface SandboxInfo {
   detail: string;
 }
 
+export interface MindSettings {
+  enabled: boolean;
+  intervalSeconds: number;
+  model: string;
+  maxTokens: number;
+  temperature: number;
+  maxTurns: number;
+  maxConcurrent: number;
+  memorySize: number;
+  allowOperatorChat: boolean;
+}
+
+export interface MindSnapshot {
+  agentId: string;
+  role: string;
+  name: string;
+  mood: { valence: number; arousal: number; label: string };
+  thought: string;
+  doing: string;
+  memories: Array<{ at: string; text: string }>;
+  relationships: Record<string, { sentiment: number; note: string; talks: number }>;
+}
+
 export interface TeamSettings {
   company: string;
   names: Record<string, string>;
@@ -70,6 +93,7 @@ export interface AppSettings {
   models: ModelSettings;
   limits: LimitSettings;
   safety: SafetySettings;
+  mind: MindSettings;
   team: TeamSettings;
   git: GitSettings;
   pricing: Record<string, PricingEntry>;

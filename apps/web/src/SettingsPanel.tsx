@@ -13,9 +13,36 @@ import type {
 } from "./types";
 
 type Draft = SettingsView["settings"];
-type Section = "provider" | "models" | "limits" | "safety" | "team" | "git" | "pricing";
+type Section = "provider" | "models" | "limits" | "safety" | "mind" | "team" | "git" | "pricing";
 
 const emptyPricing: PricingEntry = { input: 0, output: 0, cached_input: 0 };
+
+/**
+ * A server started before a field existed returns settings without it. Filling
+ * the default here means an older API can never blank the whole page.
+ */
+function normalize(view: SettingsView): SettingsView {
+  const settings = view.settings;
+  return {
+    ...view,
+    settings: {
+      ...settings,
+      mind:
+        settings.mind ?? {
+          enabled: true,
+          intervalSeconds: 14,
+          model: "",
+          maxTokens: 320,
+          temperature: 0.95,
+          maxTurns: 6,
+          maxConcurrent: 2,
+          memorySize: 8,
+          allowOperatorChat: true,
+        },
+      team: settings.team ?? { company: "Corpix", names: {} },
+    },
+  };
+}
 
 function isLocked(locked: string[], path: string): boolean {
   return locked.includes(path);
@@ -42,8 +69,9 @@ export function SettingsPanel(): ReactElement {
       api<{ models: string[] }>("/api/models").catch(() => ({ models: [] })),
       api<{ available: SandboxInfo[] }>("/api/sandbox").catch(() => ({ available: [] })),
     ]);
-    setView(settingsView);
-    setDraft(settingsView.settings);
+    const normalized = normalize(settingsView);
+    setView(normalized);
+    setDraft(normalized.settings);
     setRoles(rolesView);
     setModels(modelList.models);
     setSandboxes(sandboxList.available);
@@ -93,13 +121,15 @@ export function SettingsPanel(): ReactElement {
           models: draft.models,
           limits: draft.limits,
           safety: draft.safety,
+          mind: draft.mind,
           team: { company: draft.team.company, names },
           git: draft.git,
           pricing: draft.pricing,
         }),
       });
-      setView(next);
-      setDraft(next.settings);
+      const normalized = normalize(next);
+      setView(normalized);
+      setDraft(normalized.settings);
       setStatus({ kind: "ok", text: "Settings saved. New runs use them immediately." });
       const refreshed = await api<RolesView>("/api/roles");
       setRoles(refreshed);
@@ -371,6 +401,96 @@ export function SettingsPanel(): ReactElement {
             <option key={model} value={model} />
           ))}
         </datalist>
+      </fieldset>
+
+      <fieldset>
+        <legend>Mind</legend>
+        <label>
+          Let agents think for themselves
+          <select
+            value={draft.mind.enabled ? "on" : "off"}
+            onChange={(event) => update("mind", { enabled: event.target.value === "on" })}
+          >
+            <option value="on">on — each agent runs its own model turn</option>
+            <option value="off">off — agents sit still, no model calls, no cost</option>
+          </select>
+        </label>
+        <div className="grid">
+          <label>
+            Seconds between decisions
+            <input
+              type="number"
+              min={3}
+              max={600}
+              value={draft.mind.intervalSeconds}
+              onChange={(event) => update("mind", { intervalSeconds: Number(event.target.value) })}
+            />
+          </label>
+          <label>
+            Agents thinking at once
+            <input
+              type="number"
+              min={1}
+              max={8}
+              value={draft.mind.maxConcurrent}
+              onChange={(event) => update("mind", { maxConcurrent: Number(event.target.value) })}
+            />
+          </label>
+          <label>
+            Max output tokens per thought
+            <input
+              type="number"
+              min={64}
+              max={4096}
+              value={draft.mind.maxTokens}
+              onChange={(event) => update("mind", { maxTokens: Number(event.target.value) })}
+            />
+          </label>
+          <label>
+            Temperature
+            <input
+              type="number"
+              min={0}
+              max={2}
+              step={0.05}
+              value={draft.mind.temperature}
+              onChange={(event) => update("mind", { temperature: Number(event.target.value) })}
+            />
+          </label>
+          <label>
+            Turns per conversation
+            <input
+              type="number"
+              min={2}
+              max={12}
+              value={draft.mind.maxTurns}
+              onChange={(event) => update("mind", { maxTurns: Number(event.target.value) })}
+            />
+          </label>
+          <label>
+            Memories per agent
+            <input
+              type="number"
+              min={0}
+              max={24}
+              value={draft.mind.memorySize}
+              onChange={(event) => update("mind", { memorySize: Number(event.target.value) })}
+            />
+          </label>
+        </div>
+        <label>
+          Mind model
+          <input
+            value={draft.mind.model}
+            placeholder={draft.models.cheap}
+            onChange={(event) => update("mind", { model: event.target.value })}
+          />
+        </label>
+        <p className="muted">
+          Each agent gets its own turn with the real goal, its colleagues, its mood and its
+          memories, and decides what to do. Thoughts, moods and opinions are never generated by
+          Corpix — only stored and rendered. Leave the model empty to use the cheap model.
+        </p>
       </fieldset>
 
       <fieldset>

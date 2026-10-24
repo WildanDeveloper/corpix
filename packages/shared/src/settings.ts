@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { APPROVAL_MODES, BUDGET_ACTIONS, DEFAULT_LIMITS } from "./constants";
 import { PricingSchema } from "./config";
+import { DEFAULT_MIND, MindSettingsSchema } from "./mind";
 
 export const ProviderSettingsSchema = z.object({
   name: z.enum(["openai-compatible", "mock"]).default("mock"),
@@ -83,6 +84,7 @@ export const AppSettingsSchema = z.object({
   models: ModelSettingsSchema,
   limits: LimitSettingsSchema,
   safety: SafetySettingsSchema,
+  mind: MindSettingsSchema.default(DEFAULT_MIND),
   team: TeamSettingsSchema.default({ company: "Corpix", names: {} }),
   git: GitSettingsSchema.default({ enabled: true, integrationBranch: "integration" }),
   pricing: PricingSchema.default({}),
@@ -102,6 +104,7 @@ export const SettingsPatchSchema = z.object({
     .optional(),
   limits: LimitSettingsSchema.partial().optional(),
   safety: SafetySettingsSchema.partial().optional(),
+  mind: MindSettingsSchema.partial().optional(),
   team: z
     .object({
       company: z.string().min(1).optional(),
@@ -137,6 +140,7 @@ export function defaultSettings(): AppSettings {
     models: {},
     limits: {},
     safety: {},
+    mind: {},
     team: { company: "Corpix", names: {} },
     git: {},
     pricing: {},
@@ -185,6 +189,7 @@ export function settingsFromEnv(env: {
       approvalMode: env.APPROVAL_MODE,
       sandbox: env.SANDBOX,
     },
+    mind: {},
     team: { company: "Corpix", names: {} },
     git: {},
   });
@@ -215,6 +220,7 @@ export function mergeSettings(current: AppSettings, patch: SettingsPatch): AppSe
     },
     limits: { ...current.limits, ...(patch.limits ?? {}) },
     safety: { ...current.safety, ...(patch.safety ?? {}) },
+    mind: { ...current.mind, ...(patch.mind ?? {}) },
     team: {
       ...current.team,
       ...(patch.team ?? {}),

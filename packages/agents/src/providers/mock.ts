@@ -44,6 +44,22 @@ export class MockProvider implements LLMProvider {
       outputTokens: 32,
     };
 
+    // The office mind asks for JSON in a single user turn. Answer it with a
+    // deterministic but varied character so demo mode still feels alive.
+    const mindPrompt = request.messages
+      .flatMap((message) => message.content)
+      .filter((block) => block.type === "text")
+      .map((block) => block.text)
+      .find((text) => text.startsWith("[corpix-mind]"));
+    if (mindPrompt) {
+      const mind = mockMind(mindPrompt, turn);
+      return {
+        content: [{ type: "text", text: JSON.stringify(mind) }],
+        stopReason: "end_turn",
+        usage: { ...usage, outputTokens: estimateTokens(JSON.stringify(mind)) },
+      };
+    }
+
     const boss = request.tools.some((tool) => tool.name === "submit_plan");
     if (request.toolChoice?.name === "submit_plan" || boss) {
       const plan = this.plan ?? planFromRoles(rolesFromTools(request));
@@ -190,4 +206,115 @@ function scriptedInstructions(role: string): string {
 
 export function defaultPlan(): Plan {
   return planFromRoles(["backend", "frontend", "qa"]);
+}
+
+
+/**
+ * Demo-mode mind. It reads the prompt enough to know who it is and whether it is
+ * deciding or replying, then produces a varied in-character answer. Real
+ * deployments use the configured model; this only exists so `provider: mock` is
+ * not a dead office.
+ */
+function mockMind(prompt: string, turn: number): Record<string, unknown> {
+  const name = /You are ([^,\n]+),/.exec(prompt)?.[1] ?? "someone";
+  const role = detectRole(prompt);
+  const seed = hash(`${name}:${role}:${turn}`);
+  const replying = prompt.includes("They just spoke to you.") || prompt.includes("You started this conversation.");
+  const transcript = [...prompt.matchAll(/^(?:you|([A-Z][\w .-]+)): (.+)$/gm)];
+  const last = transcript.at(-1);
+  const lastText = last?.[2] ?? "";
+
+  if (replying) {
+    const reactions = [
+      `Fair. But ${pick(["the edge cases", "the retry path", "that assumption"], seed)} still worry me.`,
+      `Hm. I see it differently, but go on.`,
+      `That is actually a good point. I'll take another look.`,
+      `I'm not in the mood to argue about ${pick(["naming", "spacing", "YAML"], seed)} right now.`,
+      `You're describing the happy path. What happens when it fails?`,
+      `Okay, that made me laugh. Fine, you win this one.`,
+      `I'm tired. Can we do this after coffee?`,
+    ];
+    return {
+      thought: `They said: ${lastText.slice(0, 80)}`,
+      say: reactions[seed % reactions.length],
+      mood: {
+        valence: ((seed % 7) - 3) / 6,
+        arousal: ((seed % 5) - 2) / 4,
+        label: pick(["interested", "annoyed", "amused", "tired", "stubborn"], seed),
+      },
+      opinion: { sentiment: ((seed % 5) - 2) / 8, note: pick(["worth listening to", "gets defensive", "sharp", "distracted lately"], seed) },
+    };
+  }
+
+  const actions = ["work", "coffee", "water", "smoke", "whiteboard", "window", "wander", "talk", "stretch", "meeting"];
+  const action = actions[seed % actions.length];
+  const place =
+    action === "coffee" ? "coffee"
+    : action === "water" ? "water"
+    : action === "smoke" ? "smoke"
+    : action === "whiteboard" ? "whiteboard"
+    : action === "window" ? "window"
+    : action === "meeting" ? "meeting"
+    : action === "wander" ? "wander"
+    : "desk";
+  const colleague = /- ([\w .-]+) \([\w-]+, id ([\w-]+)\)/.exec(prompt);
+  const sayPool = [
+    "",
+    "I need caffeine before I look at that again.",
+    "Who touched the deploy script?",
+    "This is going to bite us later.",
+    "Finally, something that works.",
+    "I have been staring at the same line for ten minutes.",
+  ];
+  return {
+    thought: pick([
+      "I should check the diff before anyone else does.",
+      "Nobody is going to notice this if I do it quietly.",
+      "I am not paid enough to debug YAML today.",
+      "Actually, a short break would help.",
+    ], seed),
+    action,
+    place,
+    target: action === "talk" && colleague ? colleague[2] : undefined,
+    label:
+      action === "coffee" ? "getting coffee"
+      : action === "smoke" ? "on a smoke break"
+      : action === "whiteboard" ? "at the whiteboard"
+      : action === "window" ? "staring out the window"
+      : action === "wander" ? "walking it off"
+      : action === "talk" ? "looking for someone"
+      : "at the desk",
+    say: sayPool[seed % sayPool.length],
+    seconds: 8 + (seed % 12),
+    mood: {
+      valence: ((seed % 9) - 4) / 8,
+      arousal: ((seed % 5) - 2) / 4,
+      label: pick(["focused", "restless", "grumpy", "content", "curious", "wiped out"], seed),
+    },
+    remember: pick([
+      "The build was green, for once.",
+      "Someone moved my chair.",
+      "I still owe a review.",
+    ], seed),
+  };
+}
+
+function detectRole(prompt: string): string {
+  for (const role of ["boss", "frontend", "backend", "devops", "qa", "docs"]) {
+    if (prompt.toLowerCase().includes(`(${role},`) || prompt.toLowerCase().includes(` ${role} `)) return role;
+  }
+  return "backend";
+}
+
+function pick<T>(items: readonly T[], seed: number): T {
+  return items[seed % items.length] as T;
+}
+
+function hash(value: string): number {
+  let h = 2166136261;
+  for (let i = 0; i < value.length; i++) {
+    h ^= value.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return Math.abs(h);
 }

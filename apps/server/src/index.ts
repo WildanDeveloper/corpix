@@ -3,10 +3,10 @@ import path from "node:path";
 import {
   Orchestrator,
   SettingsService,
+  createProviderFromSettings,
   applyRoleOverrides,
   approvalDecider,
   capTeamSteps,
-  createProviderFromSettings,
   detectSandboxes,
   envForRoles,
   loadTeam,
@@ -14,6 +14,7 @@ import {
   probeProvider,
   type ApprovalRequest,
 } from "@corpix/agents";
+import { MindService } from "./mind-service";
 import {
   assertSafeBinding,
   findRepoRoot,
@@ -72,6 +73,30 @@ for (const run of store.listRuns()) {
 }
 const active = new Map<string, ActiveRun>();
 const pendingApprovals = new Map<string, { runId: string; resolve: (approved: boolean) => void }>();
+/** Sockets watching a run, including finished runs rendered by the office. */
+const watchers = new Map<string, Set<WebSocket>>();
+
+/**
+ * The office's mind. It runs for the life of the process, not the life of a
+ * browser tab, and writes its decisions into the newest run's stream so the
+ * existing replay/websocket plumbing works unchanged.
+ */
+const mind = new MindService({
+  store,
+  settings: settingsService,
+  configDir,
+  env,
+  dataDir,
+  provider: () => createProviderFromSettings(settingsService.load()),
+  busy: () => [...active.values()].some((record) => record.status === "running"),
+  emit: (type, payload) => {
+    const run = store.listRuns()[0];
+    if (!run) return;
+    const envelope = store.appendEvent(run.id, type, payload);
+    broadcastEnvelope(run.id, envelope);
+  },
+  log: (line) => process.stdout.write(`${line}\n`),
+});
 
 async function loadPricing(): Promise<Record<string, { input: number; output: number; cached_input?: number }>> {
   const file = path.join(configDir, "pricing.yaml");
@@ -147,6 +172,8 @@ app.patch("/api/settings", (req, res) => {
   }
   try {
     const runtime = settingsService.save(parsed.data);
+    // A rename or a new model should reach the office on the next heartbeat.
+    mind.invalidateRoster();
     res.json(maskSettings(runtime));
   } catch (error) {
     res.status(400).json({ error: (error as Error).message });
@@ -254,6 +281,28 @@ app.post("/api/projects", (req, res) => {
   };
   store.createProject(project);
   res.status(201).json(project);
+});
+
+app.get("/api/mind", (_req, res) => {
+  res.json({ minds: mind.minds(), settings: settingsService.load().settings.mind });
+});
+
+app.post("/api/mind/say", (req, res) => {
+  const body = req.body as { agentId?: unknown; text?: unknown };
+  if (typeof body.agentId !== "string" || typeof body.text !== "string" || body.text.trim().length === 0) {
+    res.status(400).json({ error: "agentId and text are required" });
+    return;
+  }
+  void mind.say(body.agentId, body.text.slice(0, 500)).then(
+    (reply) => {
+      if (!reply) {
+        res.status(404).json({ error: `unknown agent: ${String(body.agentId)}` });
+        return;
+      }
+      res.json(reply);
+    },
+    (error: unknown) => res.status(500).json({ error: (error as Error).message }),
+  );
 });
 
 app.post("/api/runs", (req, res) => {
@@ -636,6 +685,12 @@ wss.on("connection", (socket, request) => {
   const since = Number(url.searchParams.get("since") ?? 0);
   const record = active.get(runId);
   if (record) record.clients.add(socket);
+  let subscribed = watchers.get(runId);
+  if (!subscribed) {
+    subscribed = new Set();
+    watchers.set(runId, subscribed);
+  }
+  subscribed.add(socket);
 
   for (const envelope of store.listEvents(runId, Number.isFinite(since) ? since : 0)) {
     socket.send(JSON.stringify(envelope));
@@ -670,6 +725,9 @@ wss.on("connection", (socket, request) => {
 
   socket.on("close", () => {
     record?.clients.delete(socket);
+    const set = watchers.get(runId);
+    set?.delete(socket);
+    if (set && set.size === 0) watchers.delete(runId);
   });
 });
 
@@ -679,15 +737,18 @@ function broadcast(runId: string, type: string, payload: unknown): void {
 }
 
 function broadcastEnvelope(runId: string, envelope: unknown): void {
-  const record = active.get(runId);
-  if (!record) return;
   const data = JSON.stringify(envelope);
-  for (const client of record.clients) {
+  const targets = new Set<WebSocket>(watchers.get(runId) ?? []);
+  for (const client of active.get(runId)?.clients ?? []) targets.add(client);
+  for (const client of targets) {
     if (client.readyState === client.OPEN) client.send(data);
   }
 }
 
+mind.start();
+
 const shutdown = (): void => {
+  mind.stop();
   for (const record of active.values()) record.controller.abort();
   wss.close();
   server.close();

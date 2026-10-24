@@ -30,6 +30,12 @@ export const EventTypeSchema = z.enum([
   "review.finished",
   "sandbox.ready",
   "usage.updated",
+  // Office minds: what an agent decided, said, or felt. Rendered, never scripted.
+  "mind.decided",
+  "mind.said",
+  "mind.conversation.started",
+  "mind.conversation.line",
+  "mind.conversation.ended",
   "error",
 ]);
 export type EventType = z.infer<typeof EventTypeSchema>;

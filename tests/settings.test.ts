@@ -43,7 +43,7 @@ const envDefaults: Env = {
   SANDBOX: "none",
   SANDBOX_IMAGE: "node:22-bookworm-slim",
   HOST: "127.0.0.1",
-  PORT: 3001,
+  PORT: 3080,
   ADMIN_TOKEN: "",
   DATA_DIR: "./data",
   WORKSPACES_DIR: "./workspaces",
