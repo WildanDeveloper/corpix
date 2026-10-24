@@ -20,6 +20,8 @@ export interface OpenAICompatibleOptions {
    * form with a 400.
    */
   toolChoiceStyle?: ToolChoiceStyle;
+  /** `auto` leaves caching to the provider; `anthropic` adds cache_control. */
+  promptCaching?: "off" | "auto" | "anthropic";
   /** Per-request timeout; the caller's AbortSignal still wins. */
   timeoutMs?: number;
   /** Injected for tests; defaults to global fetch. */
@@ -70,6 +72,7 @@ export class OpenAICompatibleProvider implements LLMProvider {
   private readonly timeoutMs: number;
   private readonly requestedStyle: ToolChoiceStyle;
   private learnedStyle: Exclude<ToolChoiceStyle, "auto"> | null = null;
+  private readonly promptCaching: "off" | "auto" | "anthropic";
 
   constructor(options: OpenAICompatibleOptions) {
     this.baseUrl = options.baseUrl.replace(/\/+$/, "");
@@ -78,6 +81,7 @@ export class OpenAICompatibleProvider implements LLMProvider {
     this.fetchImpl = options.fetch ?? globalThis.fetch;
     this.timeoutMs = options.timeoutMs ?? 120_000;
     this.requestedStyle = options.toolChoiceStyle ?? "auto";
+    this.promptCaching = options.promptCaching ?? "auto";
   }
 
   /** Styles to try, in order. A learned style goes first. */
@@ -118,6 +122,14 @@ export class OpenAICompatibleProvider implements LLMProvider {
     };
     if (request.tools.length === 0) delete body.tools;
     if (request.temperature !== undefined) body.temperature = request.temperature;
+    if (this.promptCaching !== "off") {
+      // Fold the system prompt into the first user turn so gateways that only
+      // cache leading user messages still get a stable, cacheable prefix.
+      body.messages = foldSystemIntoFirstUser(body.messages as ChatMessage[]);
+    }
+    if (this.promptCaching === "anthropic") {
+      applyAnthropicCacheHints(body, request);
+    }
 
     const timeout = AbortSignal.timeout(this.timeoutMs);
     const signal = request.signal ? AbortSignal.any([request.signal, timeout]) : timeout;
@@ -238,6 +250,69 @@ export class OpenAICompatibleProvider implements LLMProvider {
       .map((entry) => entry.id)
       .filter((id): id is string => typeof id === "string" && id.length > 0);
   }
+}
+
+/**
+ * Anthropic-compatible endpoints cache a prefix marked with `cache_control`.
+ * We mark the system prompt and the last tool, which covers the stable prefix
+ * (instructions + tool schemas) that every loop turn repeats.
+ *
+ * Some gateways also ignore `system` messages for caching and only cache the
+ * leading `user` block, so `toChatMessages` puts the system prompt there when
+ * caching is enabled (see `foldSystemIntoFirstUser`).
+ */
+export function applyAnthropicCacheHints(
+  body: Record<string, unknown>,
+  request: CompletionRequest,
+): void {
+  const messages = body.messages as Array<Record<string, unknown>> | undefined;
+  const systemIndex = messages?.findIndex((message) => message.role === "system") ?? -1;
+  const systemMessage = systemIndex >= 0 ? messages?.[systemIndex] : undefined;
+  if (systemMessage && typeof systemMessage.content === "string") {
+    systemMessage.content = [
+      {
+        type: "text",
+        text: systemMessage.content,
+        cache_control: { type: "ephemeral" },
+      },
+    ];
+  } else if (messages && messages.length > 0) {
+    // No system message: mark the first user message, which is the stable
+    // prefix when the system prompt was folded into it.
+    const first = messages[0];
+    if (first && typeof first.content === "string") {
+      first.content = [
+        { type: "text", text: first.content, cache_control: { type: "ephemeral" } },
+      ];
+    }
+  }
+
+  const tools = body.tools as Array<Record<string, unknown>> | undefined;
+  if (tools && tools.length > 0) {
+    const last = tools[tools.length - 1] as Record<string, unknown>;
+    last.cache_control = { type: "ephemeral" };
+  }
+
+  void request;
+}
+
+/**
+ * Some OpenAI-compatible gateways only apply prefix caching to the leading
+ * `user` message and ignore `system` entirely. Folding the system prompt into the
+ * first user message keeps the cacheable prefix byte-identical across loop turns.
+ */
+export function foldSystemIntoFirstUser(messages: ChatMessage[]): ChatMessage[] {
+  if (messages.length === 0) return messages;
+  const [first, ...rest] = messages;
+  if (!first || first.role !== "system") return messages;
+  const systemText = typeof first.content === "string" ? first.content : "";
+  const next = rest[0];
+  if (!next || next.role !== "user") return messages;
+  const userText = typeof next.content === "string" ? next.content : "";
+  return [
+    { role: "user", content: `${systemText}\n\n${userText}` },
+    ...rest.slice(1),
+  ];
 }
 
 export function toChatMessages(system: string, messages: readonly Message[]): ChatMessage[] {

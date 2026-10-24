@@ -12,6 +12,11 @@ export const ProviderSettingsSchema = z.object({
    * because some OpenAI-compatible servers only accept the function-name string.
    */
   toolChoiceStyle: z.enum(["auto", "object", "name", "required", "none"]).default("auto"),
+  /**
+   * Prompt caching. `auto` relies on the provider caching repeated prefixes
+   * implicitly; `anthropic` adds explicit cache_control hints; `off` sends none.
+   */
+  promptCaching: z.enum(["off", "auto", "anthropic"]).default("auto"),
 });
 export type ProviderSettings = z.infer<typeof ProviderSettingsSchema>;
 
@@ -340,6 +345,14 @@ export function resolveSettings(
   setNumber("REVIEW_ROUNDS", ["limits", "reviewRounds"], 0, 10, (value) => {
     settings.limits.reviewRounds = value;
   });
+  const promptCaching = env.PROMPT_CACHING;
+  if (
+    (promptCaching === "off" || promptCaching === "auto" || promptCaching === "anthropic") &&
+    isPinned(pins, "PROMPT_CACHING", "provider.promptCaching")
+  ) {
+    settings.provider.promptCaching = promptCaching;
+    locked.push("provider.promptCaching");
+  }
   setNumber("TASK_TIMEOUT_MINUTES", ["limits", "taskTimeoutMinutes"], 0.1, 1440, (value) => {
     settings.limits.taskTimeoutMinutes = value;
   });

@@ -272,6 +272,22 @@ export function SettingsPanel(): ReactElement {
           </select>
         </label>
         <label>
+          Prompt caching
+          <select
+            value={draft.provider.promptCaching}
+            disabled={isLocked(locked, "provider.promptCaching")}
+            onChange={(event) =>
+              update("provider", {
+                promptCaching: event.target.value as ProviderSettings["promptCaching"],
+              })
+            }
+          >
+            <option value="auto">auto — provider decides (recommended)</option>
+            <option value="anthropic">explicit cache_control hints</option>
+            <option value="off">off</option>
+          </select>
+        </label>
+        <label>
           API key {view.apiKeySet ? <span className="badge">{view.apiKeyPreview}</span> : <span className="badge warn">not set</span>}
           <div className="row">
             <input

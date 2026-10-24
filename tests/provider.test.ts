@@ -238,4 +238,90 @@ describe("OpenAICompatibleProvider", () => {
       provider.complete({ model: "nope", system: "s", messages: [], tools: [], maxTokens: 1 }),
     ).rejects.toThrow(/does not know the model "nope"/);
   });
+
+  it("folds the system prompt into the first user turn when caching is on", async () => {    const bodies: Array<Record<string, unknown>> = [];
+    const fetchMock = (async (_url: string, init: RequestInit) => {
+      bodies.push(JSON.parse(String(init.body)) as Record<string, unknown>);
+      return new Response(
+        JSON.stringify({ choices: [{ message: { content: "ok" }, finish_reason: "stop" }] }),
+        { status: 200 },
+      );
+    }) as unknown as typeof fetch;
+
+    const request = {
+      model: "m",
+      system: "STABLE PREFIX",
+      messages: [{ role: "user" as const, content: [{ type: "text" as const, text: "task" }] }],
+      tools: [],
+      maxTokens: 5,
+    };
+
+    const on = new OpenAICompatibleProvider({
+      baseUrl: "http://x/v1",
+      promptCaching: "auto",
+      fetch: fetchMock,
+    });
+    await on.complete(request);
+    const folded = bodies[0]?.messages as Array<{ role: string; content: string }>;
+    // One user message carrying the stable prefix first: this is what gateways
+    // that ignore `system` for caching actually cache.
+    expect(folded).toHaveLength(1);
+    expect(folded[0]?.role).toBe("user");
+    expect(folded[0]?.content.startsWith("STABLE PREFIX")).toBe(true);
+    expect(folded[0]?.content).toContain("task");
+
+    const off = new OpenAICompatibleProvider({
+      baseUrl: "http://x/v1",
+      promptCaching: "off",
+      fetch: fetchMock,
+    });
+    await off.complete(request);
+    const plain = bodies[1]?.messages as Array<{ role: string }>;
+    expect(plain[0]?.role).toBe("system");
+  });
+
+  it("adds cache_control hints only when asked", async () => {
+    const bodies: Array<Record<string, unknown>> = [];
+    const fetchMock = (async (_url: string, init: RequestInit) => {
+      bodies.push(JSON.parse(String(init.body)) as Record<string, unknown>);
+      return new Response(
+        JSON.stringify({ choices: [{ message: { content: "ok" }, finish_reason: "stop" }] }),
+        { status: 200 },
+      );
+    }) as unknown as typeof fetch;
+
+    const request = {
+      model: "m",
+      system: "you are a helpful agent",
+      messages: [{ role: "user" as const, content: [{ type: "text" as const, text: "hi" }] }],
+      tools: [
+        { name: "read_file", description: "read", jsonSchema: { type: "object" } },
+        { name: "submit_report", description: "done", jsonSchema: { type: "object" } },
+      ],
+      maxTokens: 10,
+    };
+
+    const cached = new OpenAICompatibleProvider({
+      baseUrl: "http://x/v1",
+      promptCaching: "anthropic",
+      fetch: fetchMock,
+    });
+    await cached.complete(request);
+    const withHints = bodies[0] as { messages: Array<{ content: unknown }>; tools: Array<Record<string, unknown>> };
+    expect(Array.isArray(withHints.messages[0]?.content)).toBe(true);
+    expect(JSON.stringify(withHints.messages[0]?.content)).toContain("cache_control");
+    expect(withHints.tools.at(-1)?.cache_control).toEqual({ type: "ephemeral" });
+    // Only the last tool carries the marker.
+    expect(withHints.tools[0]?.cache_control).toBeUndefined();
+
+    const plain = new OpenAICompatibleProvider({
+      baseUrl: "http://x/v1",
+      promptCaching: "auto",
+      fetch: fetchMock,
+    });
+    await plain.complete(request);
+    const noHints = bodies[1] as { messages: Array<{ content: unknown }>; tools: Array<Record<string, unknown>> };
+    expect(typeof noHints.messages[0]?.content).toBe("string");
+    expect(JSON.stringify(noHints)).not.toContain("cache_control");
+  });
 });

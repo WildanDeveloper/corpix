@@ -91,6 +91,8 @@ export const UsagePayload = z.object({
   model: z.string(),
   inputTokens: z.number().int(),
   outputTokens: z.number().int(),
+  cachedInputTokens: z.number().int().optional(),
+  cacheHitRate: z.number().optional(),
   costUsd: z.number(),
   spentUsd: z.number(),
   budgetUsd: z.number(),

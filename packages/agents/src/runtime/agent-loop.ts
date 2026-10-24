@@ -202,6 +202,7 @@ export async function runAgent(
       costUsd: options.budget.records.at(-1)?.costUsd ?? 0,
       spentUsd: options.budget.spentUsd,
     });
+    const cachedInputTokens = response.usage.cachedInputTokens ?? 0;
     options.emit({
       type: "usage.updated",
       payload: {
@@ -209,6 +210,9 @@ export async function runAgent(
         model: agent.model,
         inputTokens: response.usage.inputTokens,
         outputTokens: response.usage.outputTokens,
+        cachedInputTokens,
+        cacheHitRate:
+          response.usage.inputTokens > 0 ? cachedInputTokens / response.usage.inputTokens : 0,
         costUsd: options.budget.records.at(-1)?.costUsd ?? 0,
         spentUsd: options.budget.spentUsd,
         budgetUsd: options.budget.budgetUsd,

@@ -191,7 +191,12 @@ function OfficePanel(): ReactElement {
       <section className="panel">
         <header className="panel-header">
           <h2>Dispatch a goal</h2>
-          <span className="badge">{formatUsd(spent)} spent</span>
+          <span className="badge">
+            {formatUsd(spent)} spent
+            {usage && usage.cacheHitRate > 0
+              ? ` · ${(usage.cacheHitRate * 100).toFixed(0)}% cached`
+              : ""}
+          </span>
         </header>
         <div className="row">
           <select value={projectId} onChange={(event) => setProjectId(event.target.value)}>

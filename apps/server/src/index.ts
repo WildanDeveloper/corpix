@@ -557,11 +557,18 @@ app.get("/api/usage", (req, res) => {
     return;
   }
   const rows = store.listUsage(runId);
+  const inputTokens = rows.reduce((sum, row) => sum + row.usage.inputTokens, 0);
+  const cachedInputTokens = rows.reduce(
+    (sum, row) => sum + (row.usage.cachedInputTokens ?? 0),
+    0,
+  );
   res.json({
     rows,
     totalUsd: rows.reduce((sum, row) => sum + row.costUsd, 0),
-    inputTokens: rows.reduce((sum, row) => sum + row.usage.inputTokens, 0),
+    inputTokens,
     outputTokens: rows.reduce((sum, row) => sum + row.usage.outputTokens, 0),
+    cachedInputTokens,
+    cacheHitRate: inputTokens > 0 ? cachedInputTokens / inputTokens : 0,
   });
 });
 

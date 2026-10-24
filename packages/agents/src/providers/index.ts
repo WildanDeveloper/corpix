@@ -25,6 +25,7 @@ export function createProviderFromSettings(runtime: RuntimeSettings): LLMProvide
     apiKey: runtime.apiKey,
     maxTokensParam: provider.maxTokensParam,
     toolChoiceStyle: provider.toolChoiceStyle,
+    promptCaching: provider.promptCaching,
     timeoutMs: provider.requestTimeoutMs,
   });
 }

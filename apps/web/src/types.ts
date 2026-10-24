@@ -8,6 +8,7 @@ export interface ProviderSettings {
   maxTokensParam: MaxTokensParam;
   requestTimeoutMs: number;
   toolChoiceStyle: "auto" | "object" | "name" | "required" | "none";
+  promptCaching: "off" | "auto" | "anthropic";
 }
 
 export interface RoleOverride {
@@ -137,5 +138,7 @@ export interface UsageResponse {
   totalUsd: number;
   inputTokens: number;
   outputTokens: number;
+  cachedInputTokens: number;
+  cacheHitRate: number;
   rows: Array<{ model: string; costUsd: number; usage: { inputTokens: number; outputTokens: number } }>;
 }

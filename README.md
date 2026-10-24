@@ -35,6 +35,10 @@ design lives in [`docs/DESIGN.md`](./docs/DESIGN.md).
   editable from the web UI, the API or the CLI. No restart needed.
 - **Web UI (first pass)** — a dispatch/activity/approvals view and a full
   settings panel, built with React + Vite. The pixel-art office is still to come.
+- **Prompt caching** — the stable prefix is kept byte-identical and, for gateways
+  that only cache leading user messages, the system prompt is folded into the
+  first user turn. Cache hits are read from provider usage, priced at the cached
+  rate, and reported as a hit percentage.
 - **Crash recovery** — interrupted runs are marked paused on restart; resume
   continues only the unfinished tasks, reuses spend already recorded, and never
   re-merges a branch that already landed.
@@ -47,12 +51,11 @@ design lives in [`docs/DESIGN.md`](./docs/DESIGN.md).
 - **CLI** — `run`, `runs`, `replay`, `team`, `settings`, `pricing`, `migrate`.
 - **HTTP/WS server** — health, projects, runs, events, approvals, usage,
   settings, models and a WebSocket event stream with `?since=` reconnect.
-- **161 tests** covering the jail, glob matching, command policy, plan
+- **165 tests** covering the jail, glob matching, command policy, plan
   validation, budget maths, provider mapping, settings precedence, git
   isolation and merges, cancellation, and an end-to-end mock run.
 
-Not implemented yet: prompt caching, the pixel-art office, and a production
-packaging step.
+Not implemented yet: the pixel-art office and a production packaging step.
 
 ## Quick start
 
@@ -110,7 +113,7 @@ Settings tab, `PATCH /api/settings`, or the CLI — no `.env` editing, no restar
 
 | Area | What you can change |
 |---|---|
-| Provider | `mock` or `openai-compatible`, base URL, `max_tokens` vs `max_completion_tokens`, request timeout |
+| Provider | `mock` or `openai-compatible`, base URL, `max_tokens` vs `max_completion_tokens`, request timeout, forced-tool format, **prompt caching** |
 | API key | stored in `data/secrets.json` (mode 600), **never** in SQLite and never returned to the browser |
 | Models | Boss / worker / cheap model ids |
 | Per-agent | model, max steps, **context tokens** and temperature for any role, overriding the tier default |
@@ -341,6 +344,38 @@ the database and are edited from the UI. Roles and the team are YAML in
 `config/roles/*.yaml` and `config/team.default.yaml`; `${BOSS_MODEL}`,
 `${WORKER_MODEL}` and `${CHEAP_MODEL}` are filled from the effective settings,
 and per-role overrides take precedence over both.
+
+## Cost control
+
+Agent loops resend the conversation on every step, so costs grow quickly if you
+do not manage them.
+
+- **Prompt caching.** The stable prefix (system prompt, tool schemas, task brief)
+  comes first and never changes between steps, so providers can cache it. Set
+  `provider.promptCaching`:
+  - `auto` (default) relies on the provider's implicit prefix caching;
+  - `anthropic` adds explicit `cache_control: ephemeral` markers on the system
+    prompt and the last tool, for gateways that require them;
+  - `off` sends no hints.
+  Cached tokens are read from `prompt_tokens_details.cached_tokens`, priced at
+  `cached_input` in the pricing table, and shown as a cache-hit percentage in the
+  UI and in `GET /api/usage` (`cachedInputTokens`, `cacheHitRate`).
+- **Budget guard.** The cap is checked after every API response and after a
+  resume, so spend from before a crash still counts. When exceeded, the run
+  **pauses** (default) or **stops**.
+- **Model tiering.** Strongest model for the Boss, balanced for workers, cheap
+  for docs and summaries.
+- **Small outputs.** `edit_file` beats rewriting files; tool output is truncated;
+  `read_file` accepts line ranges.
+- **Hard limits.** `MAX_STEPS_PER_TASK`, `TASK_TIMEOUT_MINUTES`,
+  `CONTEXT_TOKENS_PER_AGENT` and `MAX_CONCURRENT_AGENTS`.
+- **Review cost.** `limits.reviewRounds=0` disables the QA loop for cheap runs,
+  and `models.roles.qa.model` can point QA at a cheaper model.
+- **Mock provider and local models.** Free to run; use them while building.
+
+Note: implicit caching only helps when the prefix is byte-identical. Corpix keeps
+the system prompt, tool schemas and task brief fixed and appends tool results, so
+the prefix stays stable. Compaction rewrites only the middle of the conversation.
 
 ## Architecture
 
