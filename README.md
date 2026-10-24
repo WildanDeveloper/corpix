@@ -59,7 +59,7 @@ place. See [`docs/DESIGN.md`](./docs/DESIGN.md) for the full target design.
   and `dist/cli.mjs`; a non-root Dockerfile and compose file ship alongside.
 - **HTTP/WS server** — health, projects, runs, events, approvals, usage,
   settings, models and a WebSocket event stream with `?since=` reconnect.
-- **188 tests** covering the jail, glob matching, command policy, plan
+- **201 tests** covering the jail, glob matching, command policy, plan
   validation, budget maths, provider mapping, settings precedence, git
   isolation and merges, cancellation, office layout and pathfinding, the
   production bundles, and an end-to-end mock run.
@@ -448,6 +448,14 @@ that already exists in the run log, so what you see is always what happened.
 | `task.completed` / `task.failed` | wave and a summary bubble, or a red flag |
 | `review.started` | the QA agent walks to its desk and announces the review |
 | `run.finished` | everyone returns to idle |
+
+When nobody has a task, agents still have a life. Each one picks a deterministic
+idle activity every few seconds: resting, fidgeting, stretching, walking a lap,
+visiting the coffee machine or looking for someone to chat with. The activity is
+shown as a small line above the head, and an occasional speech bubble adds a
+one-liner ("needs caffeine", "thinking about the spec"). Behaviour is seeded per
+agent id, so the same run always looks the same in screenshots; silence is part
+of it, because constant chatter reads as noise.
 
 Implementation notes:
 

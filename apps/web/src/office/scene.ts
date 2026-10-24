@@ -19,6 +19,7 @@ import {
   COLS,
   DESKS,
   ENTRANCE,
+  MEETING_SPOTS,
   PROPS,
   ROWS,
   TILE,
@@ -32,7 +33,17 @@ import {
   type Point,
 } from "./layout";
 import { findPath, simplifyPath } from "./pathfinding";
+import {
+  hashString,
+  idleDestination,
+  moodColor,
+  mulberry32,
+  planIdle,
+  type IdleActivity,
+} from "./behavior";
 import { frameTexture, type Facing, type Pose } from "./sprites";
+
+type WalkPurpose = "desk" | "coffee" | "wander" | "chat" | "home";
 
 const ROLE_COLORS: Record<string, number> = {
   boss: 0xffd75e,
@@ -63,7 +74,19 @@ interface OfficeAgent {
   frame: number;
   clock: number;
   tool?: string;
+  toolDetail?: string;
   idleAfter: number;
+  /** Where the agent belongs when nothing is assigned. */
+  home: Point;
+  /** Why the current path exists, so arrival does the right thing. */
+  purpose: WalkPurpose;
+  /** Current line shown above the head. */
+  activity: string;
+  idleFor: number;
+  idleRound: number;
+  lastIdle: IdleActivity | null;
+  behaviour: IdleActivity | null;
+  behaviourTimer: number;
 }
 
 export interface SceneOptions {
@@ -165,6 +188,7 @@ export class OfficeScene {
         const agent = this.agents.get(String(payload.agentId ?? ""));
         if (!agent) break;
         agent.tool = String(payload.tool ?? "");
+        agent.toolDetail = describeTool(agent.tool, payload.input);
         this.setState(agent, "working", agent.tool);
         break;
       }
@@ -273,7 +297,7 @@ export class OfficeScene {
       },
     });
     label.anchor.set(0.5, 1);
-    label.position.set(0, -50);
+    label.position.set(0, -46);
     root.addChild(label);
 
     const status = new Text({
@@ -286,7 +310,7 @@ export class OfficeScene {
       },
     });
     status.anchor.set(0.5, 1);
-    status.position.set(0, -62);
+    status.position.set(0, -58);
     root.addChild(status);
 
     const start = nearestWalkable(ENTRANCE);
@@ -294,10 +318,12 @@ export class OfficeScene {
     root.zIndex = root.position.y;
     this.app.stage.addChild(root);
 
+    const desk = deskFor(role);
     const agent: OfficeAgent = {
       id: agentId,
       role,
-      name,      root,
+      name,
+      root,
       sprite,
       label,
       status,
@@ -311,8 +337,17 @@ export class OfficeScene {
       frame: 0,
       clock: 0,
       idleAfter: 0,
+      home: desk.stand,
+      purpose: "desk",
+      activity: "waiting for a task",
+      idleFor: 0,
+      idleRound: 0,
+      lastIdle: null,
+      behaviour: null,
+      behaviourTimer: 0,
     };
     this.agents.set(canonical, agent);
+    this.activity(agent, "waiting for a task", 0x9fb3c8);
     this.facingTexture(agent);
     this.sendToDesk(agent, instant);
     return agent;
@@ -321,7 +356,10 @@ export class OfficeScene {
   private sendToDesk(agent: OfficeAgent, instant = false): void {
     const desk = deskFor(agent.role);
     const target = this.reserveStand(agent, desk.stand);
-    this.walkTo(agent, target, desk.facing, instant);
+    agent.home = target;
+    agent.behaviour = null;
+    agent.behaviourTimer = 0;
+    this.walkTo(agent, target, desk.facing, instant, "desk");
   }
 
   /** Two agents on the same role must not stand on the same tile. */
@@ -353,7 +391,9 @@ export class OfficeScene {
     target: Point,
     facing?: Facing,
     instant = false,
+    purpose: WalkPurpose = "desk",
   ): void {
+    agent.purpose = purpose;
     const path = simplifyPath(findPath(agent.tile, target));
     if (path.length === 0) {
       agent.tile = target;
@@ -389,49 +429,124 @@ export class OfficeScene {
     agent.tool = tool ?? agent.tool;
     agent.status.text = "";
     agent.status.style.fill = 0xffffff;
+    agent.behaviour = null;
+    agent.behaviourTimer = 0;
+    agent.idleFor = 0;
 
     switch (state) {
       case "thinking":
         agent.pose = "idle";
-        agent.status.text = "…";
-        agent.status.style.fill = 0x9fb3c8;
+        this.activity(agent, "thinking…", 0x9fb3c8);
         break;
       case "working":
         agent.pose = "type";
-        if (agent.tool === "run_command") {
-          agent.status.text = ">_";
-          agent.status.style.fill = 0x6fd7a0;
-        } else if (agent.tool === "write_file" || agent.tool === "edit_file") {
-          agent.status.text = "⌨";
-          agent.status.style.fill = 0xffd75e;
-        } else {
-          agent.status.text = "•";
-          agent.status.style.fill = 0x9fb3c8;
-        }
+        this.activity(agent, describeWork(agent), 0xffd75e);
         break;
       case "blocked":
         agent.pose = "idle";
-        agent.status.text = "!";
-        agent.status.style.fill = 0xffab6b;
+        this.activity(agent, "needs approval", 0xffab6b);
         break;
       case "done":
         agent.pose = "idle";
-        agent.status.text = "✓";
-        agent.status.style.fill = 0x6fd7a0;
+        this.activity(agent, "done", 0x6fd7a0);
         agent.idleAfter = 2.5;
         break;
       case "error":
         agent.pose = "idle";
-        agent.status.text = "✖";
-        agent.status.style.fill = 0xff6b6b;
+        this.activity(agent, "that went wrong", 0xff6b6b);
         agent.idleAfter = 3;
         break;
       default:
         agent.pose = "sit";
+        this.activity(agent, "waiting for a task", 0x9fb3c8);
         break;
     }
+    agent.label.style.fill = moodColor(state);
     this.facingTexture(agent);
     this.updateDeskScreen(agent.role);
+  }
+
+  /**
+   * Set the persistent "what am I doing" line above the agent's head, plus the
+   * colour that reads at a glance.
+   */
+  private activity(agent: OfficeAgent, text: string, color: number): void {
+    agent.activity = text;
+    agent.status.text = text.length > 34 ? `${text.slice(0, 31)}…` : text;
+    agent.status.style.fill = color;
+  }
+
+  /**
+   * Idle behaviour: when an agent has no task it still has a life. Every few
+   * seconds it picks a small activity, occasionally walks to the coffee machine
+   * or wanders, and says something short. Deterministic per agent so screenshots
+   * stay reproducible.
+   */
+  private driveIdle(agent: OfficeAgent, delta: number): void {
+    if (agent.state !== "idle" || agent.path.length > 0) return;
+
+    agent.idleFor += delta;
+    if (agent.behaviourTimer > 0) {
+      agent.behaviourTimer -= delta;
+      if (agent.behaviourTimer <= 0) {
+        const finished = agent.behaviour;
+        agent.behaviour = null;
+        if (finished === "coffee" || finished === "wander" || finished === "chat") {
+          this.walkTo(agent, agent.home, undefined, false, "home");
+          this.activity(agent, "heading back", 0x9fb3c8);
+        } else {
+          agent.pose = "sit";
+          this.facingTexture(agent);
+          this.activity(agent, "waiting for a task", 0x9fb3c8);
+        }
+      }
+      return;
+    }
+
+    // Wait a little before the first activity so arrivals read clearly.
+    if (agent.idleFor < 2.5) return;
+
+    agent.idleRound += 1;
+    const plan = planIdle(agent.id, agent.lastIdle, agent.idleRound);
+    agent.lastIdle = plan.activity;
+    agent.behaviour = plan.activity;
+    agent.behaviourTimer = plan.duration;
+    agent.idleFor = 0;
+
+    const random = mulberry32(hashString(`${agent.id}:${agent.idleRound}:dest`));
+    const destination = idleDestination(
+      plan.activity,
+      agent.home,
+      BREAK_SPOT,
+      MEETING_SPOTS,
+      random,
+    );
+
+    if (destination && isWalkable(destination.x, destination.y)) {
+      const purpose: WalkPurpose =
+        plan.activity === "coffee" ? "coffee" : plan.activity === "chat" ? "chat" : "wander";
+      this.walkTo(agent, destination, undefined, false, purpose);
+      if (plan.line) this.say(agent, plan.line, plan.duration);
+      this.activity(agent, plan.activity === "coffee" ? "getting coffee" : "stretching legs", 0x9fb3c8);
+      return;
+    }
+
+    // No travel: act in place.
+    switch (plan.activity) {
+      case "fidget":
+      case "stretch":
+        agent.pose = "idle";
+        this.facingTexture(agent);
+        this.activity(agent, plan.activity === "stretch" ? "stretching" : "fidgeting", 0x9fb3c8);
+        break;
+      case "chat":
+        this.activity(agent, "looking for someone", 0x9fb3c8);
+        break;
+      default:
+        this.activity(agent, "at the desk", 0x9fb3c8);
+        break;
+    }
+    if (plan.line) this.say(agent, plan.line, plan.duration);
   }
 
   private updateDeskScreen(role: string): void {
@@ -478,7 +593,7 @@ export class OfficeScene {
       .lineTo(13, height + 5)
       .fill(0xf0f4f8);
     bubble.addChild(box, label);
-    bubble.position.set(-width / 2, -70 - height);
+    bubble.position.set(-width / 2, -86 - height);
     agent.root.addChild(bubble);
     agent.bubble = bubble;
     agent.bubbleTimer = seconds;
@@ -514,10 +629,9 @@ export class OfficeScene {
       if (agent.path.length > 0) {
         this.step(agent, delta);
       } else if (agent.state === "walking") {
-        agent.state = "thinking";
-        agent.pose = "sit";
-        this.facingTexture(agent);
+        this.onArrive(agent);
       }
+      this.driveIdle(agent, delta);
 
       if (agent.state === "walking") {
         agent.frame = Math.floor(agent.clock * 8) % 4;
@@ -541,6 +655,47 @@ export class OfficeScene {
     }
   }
 
+  /** Arrival behaviour depends on why the agent was walking. */
+  private onArrive(agent: OfficeAgent): void {
+    switch (agent.purpose) {
+      case "coffee":
+        agent.state = "idle";
+        agent.pose = "idle";
+        this.facingTexture(agent);
+        this.activity(agent, "at the coffee machine", 0x9fb3c8);
+        return;
+      case "chat":
+        agent.state = "idle";
+        agent.pose = "idle";
+        this.facingTexture(agent);
+        this.activity(agent, "looking for someone", 0x9fb3c8);
+        return;
+      case "wander":
+        agent.state = "idle";
+        agent.pose = "idle";
+        this.facingTexture(agent);
+        this.activity(agent, "taking a lap", 0x9fb3c8);
+        return;
+      case "home":
+        agent.state = "idle";
+        agent.pose = "sit";
+        this.facingTexture(agent);
+        this.activity(agent, "waiting for a task", 0x9fb3c8);
+        return;
+      default: {
+        // Back at the desk: face the monitor. Actual work arrives as events.
+        const desk = deskFor(agent.role);
+        agent.facing = desk.facing;
+        agent.state = "idle";
+        agent.pose = "sit";
+        this.facingTexture(agent);
+        this.activity(agent, "at the desk", 0x9fb3c8);
+        this.updateDeskScreen(agent.role);
+        return;
+      }
+    }
+  }
+
   private step(agent: OfficeAgent, delta: number): void {
     const next = agent.path[0];
     if (!next) return;
@@ -556,14 +711,7 @@ export class OfficeScene {
       agent.tile = next;
       agent.path.shift();
       if (agent.path.length === 0) {
-        const desk = deskFor(agent.role);
-        agent.facing = desk.facing;
-        agent.state = "thinking";
-        agent.pose = "sit";
-        agent.status.text = "…";
-        agent.status.style.fill = 0x9fb3c8;
-        this.facingTexture(agent);
-        this.updateDeskScreen(agent.role);
+        this.onArrive(agent);
       }
       return;
     }
@@ -746,6 +894,50 @@ export class OfficeScene {
       stage.addChild(art);
     }
   }
+}
+
+function describeWork(agent: OfficeAgent): string {
+  const detail = agent.toolDetail?.trim();
+  switch (agent.tool) {
+    case "run_command":
+      return detail ? `running ${detail}` : "running a command";
+    case "write_file":
+    case "edit_file":
+      return detail ? `writing ${detail}` : "writing code";
+    case "read_file":
+      return detail ? `reading ${detail}` : "reading";
+    case "search_files":
+      return detail ? `searching for ${detail}` : "searching";
+    case "list_files":
+      return "looking around the repo";
+    case "message_agent":
+      return detail ? `messaging ${detail}` : "messaging the team";
+    case "submit_plan":
+      return "writing the plan";
+    case "submit_report":
+      return "writing the report";
+    default:
+      return agent.tool ? `using ${agent.tool}` : "working";
+  }
+}
+
+function describeTool(tool: string, input: unknown): string | undefined {
+  if (!input || typeof input !== "object") return undefined;
+  const value = input as Record<string, unknown>;
+  const path = typeof value.path === "string" ? value.path : undefined;
+  const command = typeof value.command === "string" ? value.command : undefined;
+  const to = typeof value.to === "string" ? value.to : undefined;
+  const pattern = typeof value.pattern === "string" ? value.pattern : undefined;
+  if (tool === "run_command" && command) {
+    const args = Array.isArray(value.args) ? value.args.join(" ") : "";
+    return `${command} ${args}`.trim().slice(0, 28);
+  }
+  if ((tool === "write_file" || tool === "edit_file" || tool === "read_file") && path) {
+    return path.split("/").slice(-2).join("/");
+  }
+  if (tool === "search_files" && pattern) return `"${pattern}"`;
+  if (tool === "message_agent" && to) return to;
+  return undefined;
 }
 
 function roleFromAgentId(agentId: string): string {
