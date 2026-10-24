@@ -59,7 +59,7 @@ place. See [`docs/DESIGN.md`](./docs/DESIGN.md) for the full target design.
   and `dist/cli.mjs`; a non-root Dockerfile and compose file ship alongside.
 - **HTTP/WS server** — health, projects, runs, events, approvals, usage,
   settings, models and a WebSocket event stream with `?since=` reconnect.
-- **206 tests** covering the jail, glob matching, command policy, plan
+- **221 tests** covering the jail, glob matching, command policy, plan
   validation, budget maths, provider mapping, settings precedence, git
   isolation and merges, cancellation, office layout and pathfinding, the
   production bundles, and an end-to-end mock run.
@@ -462,11 +462,21 @@ with the same role behave differently and the same agent does not loop on coffee
 | restlessness | walk a lap, stretch, fidget |
 | focus | rest at the desk, tidy it, or sketch at the whiteboard |
 
-Pair conversations are real: two idle agents walk to adjacent spots, turn towards
-each other, trade lines, and both get the social benefit before returning to
-their desks. A small line above the head always says what the agent is doing, and
-an occasional speech bubble adds a one-liner. Silence is part of it, because
-constant chatter reads as noise.
+Conversations are turn-based, not simultaneous. Two (sometimes three) idle agents
+walk to the meeting room, sit around the table facing each other, and take turns.
+A global speech channel allows **one bubble at a time**: the speaker gets the
+bubble and a "talking to …" line, listeners stay silent, and the next line is only
+queued once the previous one has been read.
+
+The topic is chosen from the roles present — API contract, tests, deploy, docs,
+planning, review, debugging, design — and the lines reference the real run: the
+goal, task titles and changed files (for example "Does the endpoint from
+`server/src/todo.ts` match the contract?"). Each exchange is 5–6 turns, paced so a
+line is not cut off. Only one conversation runs at a time, with a cooldown
+afterwards, so the office never turns into a wall of text.
+
+A small line above the head always says what the agent is doing, and silence is
+part of it: constant chatter reads as noise, not personality.
 
 Behaviour is seeded per agent id and each activity is applied to the needs, so
 the office drifts naturally instead of looping. `?debug=1` exposes needs and mood

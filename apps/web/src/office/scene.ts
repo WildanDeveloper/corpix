@@ -38,6 +38,13 @@ import {
 } from "./layout";
 import { findPath, simplifyPath } from "./pathfinding";
 import {
+  buildConversation,
+  conversationCooldown,
+  lineDuration,
+  type ConversationLine,
+} from "./conversation";
+import { SpeechQueue } from "./speech";
+import {
   applyActivity,
   destinationFor,
   driftNeeds,
@@ -108,9 +115,16 @@ interface OfficeAgent {
   behaviourTimer: number;
   needs: NeedState;
   recentActivities: IdleActivity[];
-  chatPartner: string | null;
-  chatNextAt: number;
+  inConversation: boolean;
   smokeTimer: number;
+}
+
+interface ActiveConversation {
+  topic: string;
+  participants: string[];
+  lines: ConversationLine[];
+  index: number;
+  nextAt: number;
 }
 
 export interface SceneOptions {
@@ -128,6 +142,15 @@ export class OfficeScene {
   private readonly deskScreens = new Map<string, Graphics>();
   private readonly roleNames = new Map<string, string>();
   private readonly puffs: Array<{ gfx: Graphics; life: number; max: number; vy: number }> = [];
+  private readonly speech = new SpeechQueue(0.6);
+  private conversation: ActiveConversation | null = null;
+  private conversationCooldown = 0;
+  private context: { goal: string; tasks: string[]; files: string[] } = {
+    goal: "",
+    tasks: [],
+    files: [],
+  };
+  private activeBubbleAgent: string | null = null;
   private readonly reducedMotion: boolean;
   private ready = false;
   private destroyed = false;
@@ -258,10 +281,22 @@ export class OfficeScene {
     }
   }
 
+  /** Context used to make conversations refer to the real run. */
+  setContext(context: { goal?: string; tasks?: string[]; files?: string[] }): void {
+    this.context = {
+      goal: context.goal ?? this.context.goal,
+      tasks: context.tasks ?? this.context.tasks,
+      files: context.files ?? this.context.files,
+    };
+  }
+
   reset(): void {
     for (const agent of this.agents.values()) agent.root.destroy({ children: true });
     this.agents.clear();
     this.aliases.clear();
+    this.conversation = null;
+    this.speech.clear();
+    this.activeBubbleAgent = null;
     for (const screen of this.deskScreens.values()) {
       screen.clear().rect(0, 0, 14, 8).fill(0x1a2630);
     }
@@ -288,6 +323,25 @@ export class OfficeScene {
       path: agent.path.length,
       needs: { ...agent.needs },
     }));
+  }
+
+  /** Debug snapshot for `?debug=1` and screenshot tests. */
+  debugState(): {
+    conversation: { topic: string; index: number; participants: string[] } | null;
+    bubbles: string[];
+    pendingSpeech: number;
+  } {
+    return {
+      conversation: this.conversation
+        ? {
+            topic: this.conversation.topic,
+            index: this.conversation.index,
+            participants: [...this.conversation.participants],
+          }
+        : null,
+      bubbles: [...this.agents.values()].filter((agent) => agent.bubble).map((agent) => agent.id),
+      pendingSpeech: this.speech.pending,
+    };
   }
 
   destroy(): void {
@@ -378,8 +432,7 @@ export class OfficeScene {
       behaviourTimer: 0,
       needs: seededNeeds(canonical),
       recentActivities: [],
-      chatPartner: null,
-      chatNextAt: 0,
+      inConversation: false,
       smokeTimer: 0,
     };
     this.agents.set(canonical, agent);
@@ -461,6 +514,10 @@ export class OfficeScene {
       agent.state = "walking";
       return;
     }
+    if (agent.inConversation && state !== "idle") {
+      agent.inConversation = false;
+      this.finishConversation();
+    }
     agent.state = state;
     agent.tool = tool ?? agent.tool;
     agent.status.text = "";
@@ -538,14 +595,8 @@ export class OfficeScene {
       return;
     }
 
-    // A paired conversation: both agents stay put and trade a line or two.
-    if (agent.chatPartner) {
-      if (agent.behaviourTimer > 0) {
-        agent.behaviourTimer -= delta;
-        if (agent.behaviourTimer <= 0) this.endPairChat(agent);
-        return;
-      }
-    }
+    // Agents inside a conversation are driven by advanceConversation().
+    if (agent.inConversation) return;
 
     if (agent.behaviourTimer > 0) {
       agent.behaviourTimer -= delta;
@@ -582,11 +633,16 @@ export class OfficeScene {
 
     const random = mulberry32(hashString(`${agent.id}:${round}:dest`));
 
-    // Paired chat: find a colleague who is also free and close enough.
-    if (plan.activity === "pair-chat" || plan.activity === "chat") {
+    // Conversation: only one runs at a time, and only after a cooldown, so the
+    // office never shows two overlapping chats.
+    if (
+      (plan.activity === "pair-chat" || plan.activity === "chat") &&
+      !this.conversation &&
+      this.conversationCooldown <= 0
+    ) {
       const partner = this.findChatPartner(agent);
       if (partner) {
-        this.startPairChat(agent, partner);
+        this.startConversation(agent, partner);
         return;
       }
     }
@@ -632,7 +688,11 @@ export class OfficeScene {
   /** Social activities need at least one other idle agent. */
   private socialAvailable(agent: OfficeAgent): boolean {
     return [...this.agents.values()].some(
-      (other) => other.id !== agent.id && other.state === "idle" && other.path.length === 0 && !other.chatPartner,
+      (other) =>
+        other.id !== agent.id &&
+        other.state === "idle" &&
+        other.path.length === 0 &&
+        !other.inConversation,
     );
   }
 
@@ -642,7 +702,7 @@ export class OfficeScene {
         other.id !== agent.id &&
         other.state === "idle" &&
         other.path.length === 0 &&
-        !other.chatPartner &&
+        !other.inConversation &&
         Math.abs(other.tile.x - agent.tile.x) + Math.abs(other.tile.y - agent.tile.y) <= 9,
     );
     if (candidates.length === 0) return null;
@@ -651,57 +711,140 @@ export class OfficeScene {
   }
 
   /**
-   * Two agents turn towards each other and trade lines. The pair shares one
-   * timer, so both stop together and both get the social benefit.
+   * Start a turn-based conversation between two or three agents. One speaker at a
+   * time, lines drawn from the topic that matches the roles present, referencing
+   * the actual goal and files of this run.
    */
-  private startPairChat(agent: OfficeAgent, partner: OfficeAgent): void {
-    const duration = 5 + Math.random() * 3;
-    agent.chatPartner = partner.id;
-    partner.chatPartner = agent.id;
-    agent.behaviour = "pair-chat";
-    partner.behaviour = "pair-chat";
-    agent.behaviourTimer = duration;
-    partner.behaviourTimer = duration;
+  private startConversation(initiator: OfficeAgent, partner: OfficeAgent): void {
+    const participants = [initiator, partner];
+    // A third agent standing nearby may join, which is how real offices work.
+    const third = [...this.agents.values()].find(
+      (other) =>
+        other.id !== initiator.id &&
+        other.id !== partner.id &&
+        other.state === "idle" &&
+        other.path.length === 0 &&
+        !other.inConversation &&
+        Math.abs(other.tile.x - initiator.tile.x) + Math.abs(other.tile.y - initiator.tile.y) <= 4 &&
+        hashString(`${other.id}:${initiator.idleRound}:join`) % 3 === 0,
+    );
+    if (third) participants.push(third);
 
-    agent.facing = partner.tile.x >= agent.tile.x ? "right" : "left";
-    partner.facing = agent.tile.x >= partner.tile.x ? "right" : "left";
-    agent.pose = "idle";
-    partner.pose = "idle";
-    this.facingTexture(agent);
-    this.facingTexture(partner);
+    const script = buildConversation(
+      participants.map((participant) => ({
+        id: participant.id,
+        role: participant.role,
+        name: participant.name,
+      })),
+      this.context,
+      initiator.idleRound,
+    );
+    if (script.lines.length === 0) return;
 
-    this.activity(agent, `talking to ${partner.name}`, 0x9fb3c8);
-    this.activity(partner, `talking to ${agent.name}`, 0x9fb3c8);
+    this.conversation = {
+      topic: script.topic,
+      participants: participants.map((participant) => participant.id),
+      lines: script.lines,
+      index: 0,
+      nextAt: 0,
+    };
+    this.conversationCooldown = conversationCooldown(initiator.idleRound + participants.length);
+    // Clear background chatter so the first line is heard, not queued behind it.
+    this.speech.dropBelow(50);
 
-    const lines = [
-      "did you see the diff?",
-      "how do you mock that?",
-      "nice, that works",
-      "want a second pair of eyes?",
-      "coffee later?",
-    ];
-    const random = mulberry32(hashString(`${agent.id}:${partner.id}:chat`));
-    this.say(agent, lines[Math.floor(random() * lines.length)] ?? "hey", duration);
-    this.say(partner, lines[Math.floor(random() * lines.length)] ?? "sure", duration);
+    const base = hashString(participants.map((participant) => participant.id).join(":")) % MEETING_SPOTS.length;
+    participants.forEach((participant, index) => {
+      const spot = MEETING_SPOTS[(base + index * 2) % MEETING_SPOTS.length];
+      if (spot) this.walkTo(participant, spot, undefined, false, "chat");
+    });
+
+    for (const participant of participants) {
+      participant.inConversation = true;
+      participant.behaviour = "pair-chat";
+      participant.behaviourTimer = 999;
+      participant.pose = "idle";
+      const other = participants.find((candidate) => candidate.id !== participant.id);
+      if (other) {
+        participant.facing = other.tile.x >= participant.tile.x ? "right" : "left";
+      }
+      this.facingTexture(participant);
+      this.activity(participant, "heading to a chat", 0x9fb3c8);
+    }
   }
 
-  private endPairChat(agent: OfficeAgent): void {
-    const partnerId = agent.chatPartner;
-    agent.chatPartner = null;
-    agent.behaviour = null;
-    agent.behaviourTimer = 0;
-    agent.needs = applyActivity(agent.needs, "pair-chat");
-    this.rememberActivity(agent, "pair-chat");
-    this.activity(agent, "back to it", 0x9fb3c8);
+  /** Advance the active conversation: queue the next line, then finish. */
+  private advanceConversation(delta: number): void {
+    const conversation = this.conversation;
+    if (!conversation) return;
 
-    const partner = partnerId ? this.agents.get(partnerId) : null;
-    if (partner) {
-      partner.chatPartner = null;
-      partner.behaviour = null;
-      partner.behaviourTimer = 0;
-      partner.needs = applyActivity(partner.needs, "pair-chat");
-      this.rememberActivity(partner, "pair-chat");
-      this.activity(partner, "back to it", 0x9fb3c8);
+    const participants = conversation.participants
+      .map((id) => this.agents.get(id))
+      .filter((agent): agent is OfficeAgent => Boolean(agent));
+    // Wait until the whole group is seated; a line while walking looks wrong.
+    if (participants.length < 2 || participants.some((agent) => agent.path.length > 0)) return;
+
+    // Pace lines to the speech channel: one queued line at a time keeps the
+    // conversation readable and stops a backlog from forming.
+    if (this.speech.pending > 0) return;
+
+    conversation.nextAt -= delta;
+    if (conversation.nextAt > 0) return;
+
+    const line = conversation.lines[conversation.index];
+    if (!line) {
+      // Do not tear down the group while a queued line is still waiting to be
+      // shown, otherwise the last sentence disappears mid-air.
+      if (this.speech.pending > 0) {
+        conversation.nextAt = 0.4;
+        return;
+      }
+      this.finishConversation();
+      return;
+    }
+    const speaker = this.agents.get(line.speakerId);
+    if (!speaker) {
+      this.finishConversation();
+      return;
+    }
+    // Queued, not shown: the global speech channel decides when it appears, so
+    // two agents can never talk over each other.
+    this.speech.enqueue({
+      agentId: speaker.id,
+      text: line.text,
+      priority: 60,
+      duration: lineDuration(line.text),
+      tag: "conversation",
+    });
+    const speakerName = speaker.name;
+    const otherName = participants.find((participant) => participant.id !== speaker.id)?.name ?? "the team";
+    for (const participant of participants) {
+      if (participant.id === speaker.id) {
+        this.activity(participant, `talking to ${otherName}`, 0xffd75e);
+      } else {
+        // Listeners stay quiet: only one status line in a conversation, so the
+        // labels never overlap and the turn is obvious.
+        this.activity(participant, "", 0x7f8c9b);
+      }
+    }
+
+    conversation.index += 1;
+    conversation.nextAt = lineDuration(line.text) + 0.6;
+  }
+
+  private finishConversation(): void {
+    const conversation = this.conversation;
+    this.conversation = null;
+    if (!conversation) return;
+    for (const id of conversation.participants) {
+      const agent = this.agents.get(id);
+      if (!agent) continue;
+      agent.inConversation = false;
+      agent.behaviour = null;
+      agent.behaviourTimer = 0;
+      agent.needs = applyActivity(agent.needs, "pair-chat");
+      this.rememberActivity(agent, "pair-chat");
+      this.activity(agent, "heading back", 0x9fb3c8);
+      this.walkTo(agent, agent.home, undefined, false, "home");
     }
   }
 
@@ -720,7 +863,20 @@ export class OfficeScene {
       .fill(active ? 0x0d161d : 0x0f1a22);
   }
 
-  private say(agent: OfficeAgent, raw: string, seconds: number): void {
+  /** Queue a line; the global speech channel decides when it is shown. */
+  private say(agent: OfficeAgent, raw: string, seconds: number, priority = 10): void {
+    // While a conversation is on, the group owns the channel; solo chatter waits.
+    if (this.conversation && priority < 50) return;
+    this.speech.enqueue({
+      agentId: agent.id,
+      text: raw,
+      priority,
+      duration: Math.max(2.4, seconds),
+    });
+  }
+
+  /** Draw the bubble immediately. Only the speech scheduler calls this. */
+  private showBubble(agent: OfficeAgent, raw: string, seconds: number): void {
     const text = raw.length > 90 ? `${raw.slice(0, 87)}…` : raw;
     if (agent.bubble) {
       agent.root.removeChild(agent.bubble);
@@ -771,6 +927,28 @@ export class OfficeScene {
 
   private update(delta: number): void {
     if (this.destroyed) return;
+
+    this.conversationCooldown = Math.max(0, this.conversationCooldown - delta);
+    this.advanceConversation(delta);
+
+    // One speaker at a time: drop queued lines from agents that moved on, then
+    // let the scheduler grant the next bubble.
+    this.speech.dropStale((entry) => {
+      const agent = this.agents.get(entry.agentId);
+      if (!agent) return false;
+      return entry.tag === "conversation" ? agent.inConversation : true;
+    });
+    const granted = this.speech.tick(delta);
+    if (granted) {
+      const speaker = this.agents.get(granted.agentId);
+      if (speaker) {
+        if (this.activeBubbleAgent && this.activeBubbleAgent !== granted.agentId) {
+          this.clearBubble(this.activeBubbleAgent);
+        }
+        this.showBubble(speaker, granted.text, granted.duration);
+        this.activeBubbleAgent = granted.agentId;
+      }
+    }
 
     for (let index = this.puffs.length - 1; index >= 0; index--) {
       const puff = this.puffs[index];
@@ -824,6 +1002,15 @@ export class OfficeScene {
         }
       }
     }
+  }
+
+  private clearBubble(agentId: string): void {
+    const agent = this.agents.get(agentId);
+    if (!agent?.bubble) return;
+    agent.root.removeChild(agent.bubble);
+    agent.bubble.destroy({ children: true });
+    agent.bubble = null;
+    agent.bubbleTimer = 0;
   }
 
   private spawnSmoke(agent: OfficeAgent, delta: number): void {
@@ -891,15 +1078,18 @@ export class OfficeScene {
         return;
       case "chat": {
         agent.state = "idle";
-        agent.pose = "idle";
-        const partner = agent.chatPartner ? this.agents.get(agent.chatPartner) : null;
-        if (partner) {
-          agent.facing = partner.tile.x >= agent.tile.x ? "right" : "left";
-          this.facingTexture(agent);
-          this.activity(agent, `talking to ${partner.name}`, 0x9fb3c8);
-        } else {
-          this.facingTexture(agent);
-        }
+        agent.pose = "sit";
+        const group = this.conversation?.participants
+          .map((id) => this.agents.get(id))
+          .filter((member): member is OfficeAgent => Boolean(member)) ?? [];
+        const others = group.filter((member) => member.id !== agent.id);
+        const target = others[0] ?? agent;
+        const dx = target.tile.x - agent.tile.x;
+        const dy = target.tile.y - agent.tile.y;
+        agent.facing =
+          Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? "right" : "left") : dy > 0 ? "down" : "up";
+        this.facingTexture(agent);
+        this.activity(agent, "waiting to talk", 0x9fb3c8);
         return;
       }
       case "wander":

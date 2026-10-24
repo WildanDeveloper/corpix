@@ -6,21 +6,25 @@ interface OfficeCanvasProps {
   runId: string | null;
   events: RunEvent[];
   roleNames: Record<string, string>;
+  /** Real run context so conversations mention the actual work. */
+  context?: { goal?: string; tasks?: string[]; files?: string[] };
 }
 
 /**
  * Mounts the Pixi scene once and feeds it the event stream. Events that arrive
  * before Pixi finishes initialising are replayed, so nothing is lost.
  */
-export function OfficeCanvas({ runId, events, roleNames }: OfficeCanvasProps): ReactElement {
+export function OfficeCanvas({ runId, events, roleNames, context }: OfficeCanvasProps): ReactElement {
   const hostRef = useRef<HTMLDivElement>(null);
   const sceneRef = useRef<OfficeScene | null>(null);
   const lastSeq = useRef(0);
   const previousRunId = useRef<string | null>(null);
   const eventsRef = useRef(events);
   const roleNamesRef = useRef(roleNames);
+  const contextRef = useRef(context);
   eventsRef.current = events;
   roleNamesRef.current = roleNames;
+  contextRef.current = context;
 
   useEffect(() => {
     let cancelled = false;
@@ -41,6 +45,7 @@ export function OfficeCanvas({ runId, events, roleNames }: OfficeCanvasProps): R
         (window as unknown as { __corpixOffice?: OfficeScene }).__corpixOffice = scene;
       }
       scene.setRoleNames(roleNamesRef.current);
+      if (contextRef.current) scene.setContext(contextRef.current);
       // Replaying history places agents instantly; only live events animate.
       for (const event of eventsRef.current) scene.applyEvent(event, { instant: true });
       lastSeq.current = eventsRef.current.at(-1)?.seq ?? 0;
@@ -56,6 +61,10 @@ export function OfficeCanvas({ runId, events, roleNames }: OfficeCanvasProps): R
   useEffect(() => {
     sceneRef.current?.setRoleNames(roleNames);
   }, [roleNames]);
+
+  useEffect(() => {
+    if (context) sceneRef.current?.setContext(context);
+  }, [context]);
 
   useEffect(() => {
     const scene = sceneRef.current;

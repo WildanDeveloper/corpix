@@ -215,14 +215,14 @@ export function chooseActivity(
   push("stretch", "restlessness", 0.75);
   push("wander", "restlessness", 1.0);
   push("fidget", "restlessness", 0.55);
-  push("chat", "social", 1.05);
-  push("pair-chat", "social", 1.15);
+  push("chat", "social", 1.15);
+  push("pair-chat", "social", 1.4);
   push("meeting", "social", 0.6);
   // The whiteboard is a treat, not a habit: focus also drives resting and
   // tidying, so a low weight here keeps the room from clustering at the board.
   push("whiteboard", "focus", 0.18);
   push("desk-tidy", "focus", 0.22);
-  push("rest", "focus", 1.0);
+  push("rest", "focus", 0.8);
 
   pressure.sort((a, b) => b.score - a.score);
   return pressure[0]?.activity ?? "rest";

@@ -220,6 +220,27 @@ function OfficePanel(): ReactElement {
 
   const spent = useMemo(() => usage?.totalUsd ?? 0, [usage]);
 
+  // Derive what the team is working on, so office chatter references real work.
+  const officeContext = useMemo(() => {
+    const goal = events.find((event) => event.type === "run.started")?.payload.goal;
+    const tasks: string[] = [];
+    const files: string[] = [];
+    for (const event of events) {
+      if (event.type === "task.created" && typeof event.payload.title === "string") {
+        tasks.push(event.payload.title);
+      }
+      if (event.type === "tool.called" && event.payload.tool === "write_file") {
+        const input = event.payload.input as { path?: unknown } | undefined;
+        if (typeof input?.path === "string") files.push(input.path);
+      }
+    }
+    return {
+      goal: typeof goal === "string" ? goal : undefined,
+      tasks: tasks.slice(-6),
+      files: files.slice(-6),
+    };
+  }, [events]);
+
   return (
     <div className="office">
       <section className="panel office-panel">
@@ -229,7 +250,12 @@ function OfficePanel(): ReactElement {
             {runId ? `run ${runId}` : "idle"}
           </span>
         </header>
-        <OfficeCanvas runId={runId} events={events} roleNames={roleNames} />
+        <OfficeCanvas
+          runId={runId}
+          events={events}
+          roleNames={roleNames}
+          context={officeContext}
+        />
       </section>
 
       <section className="panel">
