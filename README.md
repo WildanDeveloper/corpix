@@ -135,9 +135,18 @@ generates a random token on first start and stores it in `/data/admin-token`:
 docker compose exec corpix cat /data/admin-token
 ```
 
-Paste it into the **Admin token** field in the UI. The static UI and
-`/api/health` stay public so the page can load and the healthcheck can run;
-every other API route requires the token.
+Paste it into the **Admin token** field in the UI, or open the page once with the
+token in the URL and it is remembered in that browser:
+
+```bash
+TOKEN=$(docker compose exec -T corpix cat /data/admin-token)
+echo "http://127.0.0.1:3001/?token=$TOKEN"
+```
+
+The static UI and `/api/health` stay public so the page can load and the
+healthcheck can run; every other API route requires the token, and the Settings
+page explains exactly what to do when it is missing instead of showing an empty
+panel.
 
 **Volumes.** Compose uses named volumes because they inherit the image's
 ownership. If you prefer a bind mount, chown it first:

@@ -341,3 +341,19 @@ footer {
   letter-spacing: 0.12em;
   text-transform: uppercase;
 }
+
+.auth-banner {
+  border: 1px solid var(--warn);
+  background: rgba(210, 153, 34, 0.12);
+  color: var(--warn);
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin-bottom: 14px;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.auth-banner code {
+  margin: 0 4px;
+  color: var(--text);
+}

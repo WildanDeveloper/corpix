@@ -9,6 +9,30 @@ type Tab = "office" | "settings";
 export function App(): ReactElement {
   const [tab, setTab] = useState<Tab>("office");
   const [token, setTokenState] = useState(getToken());
+  const [authRequired, setAuthRequired] = useState(false);
+  const tokenInput = useRef<HTMLInputElement>(null);
+
+  // `?token=...` makes the first login painless; the token is stored locally and
+  // removed from the address bar so it does not linger in history.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const fromUrl = params.get("token");
+    if (!fromUrl) return;
+    setTokenState(fromUrl);
+    setToken(fromUrl);
+    params.delete("token");
+    const query = params.toString();
+    window.history.replaceState({}, "", `${window.location.pathname}${query ? `?${query}` : ""}`);
+  }, []);
+
+  useEffect(() => {
+    void fetch("/api/health")
+      .then((response) => response.json())
+      .then((health: { authRequired?: boolean }) => setAuthRequired(Boolean(health.authRequired)))
+      .catch(() => undefined);
+  }, []);
+
+  const needsToken = authRequired && token.trim().length === 0;
 
   return (
     <div className="app">
@@ -23,6 +47,7 @@ export function App(): ReactElement {
         <label className="token" title="Required only when ADMIN_TOKEN is set on the server">
           Admin token
           <input
+            ref={tokenInput}
             type="password"
             value={token}
             placeholder="optional"
@@ -33,6 +58,19 @@ export function App(): ReactElement {
           />
         </label>
       </nav>
+      {needsToken && (
+        <div className="auth-banner">
+          <strong>This server requires an admin token.</strong> Paste the token from
+          <code>docker compose exec corpix cat /data/admin-token</code> into the
+          <em>Admin token</em> field above, then press Enter.
+          <button
+            className="inline"
+            onClick={() => tokenInput.current?.focus()}
+          >
+            Focus field
+          </button>
+        </div>
+      )}
       <main>{tab === "settings" ? <SettingsPanel key={token} /> : <OfficePanel key={token} />}</main>
     </div>
   );

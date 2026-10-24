@@ -124,6 +124,8 @@ app.get("/api/health", (_req, res) => {
     model: runtime.settings.models.boss,
     activeRuns: active.size,
     apiKeySet: runtime.apiKey.length > 0,
+    // The UI uses this to explain the 401 instead of showing an empty panel.
+    authRequired: adminToken.length > 0,
   });
 });
 

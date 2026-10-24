@@ -11,6 +11,9 @@ export async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const text = await response.text();
   const data = text.length > 0 ? (JSON.parse(text) as unknown) : null;
   if (!response.ok) {
+    if (response.status === 401) {
+      throw new Error("UNAUTHORIZED");
+    }
     const message =
       data && typeof data === "object" && "error" in data
         ? String((data as { error: unknown }).error)

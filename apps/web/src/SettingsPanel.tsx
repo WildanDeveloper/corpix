@@ -174,10 +174,27 @@ export function SettingsPanel(): ReactElement {
   }, [models, draft]);
 
   if (!draft || !view) {
+    const unauthorized = status.text === "UNAUTHORIZED";
     return (
       <section className="panel">
         <h2>Settings</h2>
-        <p className="muted">{status.text || "Loading settings…"}</p>
+        {unauthorized ? (
+          <div className="auth-banner">
+            <strong>Admin token required.</strong>
+            <p>
+              This server was started with <code>ADMIN_TOKEN</code>, so every API call
+              needs it. Read the token and paste it into the <em>Admin token</em> field
+              at the top right:
+            </p>
+            <pre>docker compose exec corpix cat /data/admin-token</pre>
+            <p className="muted">
+              Or open the page once with <code>?token=&lt;token&gt;</code> and it will be
+              remembered in this browser.
+            </p>
+          </div>
+        ) : (
+          <p className="muted">{status.text || "Loading settings…"}</p>
+        )}
       </section>
     );
   }
