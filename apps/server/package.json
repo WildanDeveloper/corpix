@@ -12,5 +12,9 @@
     "express": "^5.0.1",
     "ws": "^8.18.0",
     "yaml": "^2.6.1"
+  },
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "start": "tsx src/index.ts"
   }
 }

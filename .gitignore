@@ -21,3 +21,4 @@ id_rsa*
 .idea/
 .vscode/
 *.log
+dist/

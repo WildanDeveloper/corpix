@@ -2,15 +2,20 @@ import { existsSync } from "node:fs";
 import path from "node:path";
 import {
   Orchestrator,
-  createProvider,
+  SettingsService,
+  applyRoleOverrides,
+  createProviderFromSettings,
   envForRoles,
   loadTeam,
+  probeProvider,
   type ApprovalRequest,
 } from "@corpix/agents";
 import {
   assertSafeBinding,
+  maskSettings,
   newProjectId,
   parseEnv,
+  SettingsPatchSchema,
   type Env,
 } from "@corpix/shared";
 import { openMigrated, SqliteStore } from "@corpix/server/db";
@@ -32,7 +37,11 @@ const env = parseEnv(process.env);
 assertSafeBinding(env);
 
 const configDir = path.join(process.cwd(), "config");
-const store = new SqliteStore(openMigrated(path.join(env.DATA_DIR, "corpix.sqlite")));
+const store = new SqliteStore(
+  openMigrated(path.join(env.DATA_DIR, "corpix.sqlite")),
+  path.join(env.DATA_DIR, "secrets.json"),
+);
+const settingsService = new SettingsService(store, process.env, env);
 const active = new Map<string, ActiveRun>();
 const pendingApprovals = new Map<string, (approved: boolean) => void>();
 
@@ -40,6 +49,12 @@ async function loadPricing(): Promise<Record<string, { input: number; output: nu
   const file = path.join(configDir, "pricing.yaml");
   if (!existsSync(file)) return {};
   return (YAML.parse(await readFile(file, "utf8")) as Record<string, { input: number; output: number }>) ?? {};
+}
+
+/** Pricing comes from settings first, then config/pricing.yaml. */
+async function effectivePricing(runtime: ReturnType<SettingsService["load"]>) {
+  const fromYaml = await loadPricing();
+  return { ...fromYaml, ...runtime.settings.pricing };
 }
 
 const app = express();
@@ -54,13 +69,91 @@ app.use((req, res, next) => {
 });
 
 app.get("/api/health", (_req, res) => {
+  const runtime = settingsService.load();
   res.json({
     ok: true,
-    provider: env.LLM_PROVIDER,
-    providerConfigured: env.LLM_PROVIDER === "mock" ? true : env.LLM_BASE_URL.length > 0,
-    model: env.BOSS_MODEL,
+    provider: runtime.settings.provider.name,
+    providerConfigured:
+      runtime.settings.provider.name === "mock" || runtime.apiKey.length > 0,
+    model: runtime.settings.models.boss,
     activeRuns: active.size,
+    apiKeySet: runtime.apiKey.length > 0,
   });
+});
+
+// --- settings ---------------------------------------------------------------
+
+app.get("/api/settings", (_req, res) => {
+  const runtime = settingsService.load();
+  res.json(maskSettings(runtime));
+});
+
+app.patch("/api/settings", (req, res) => {
+  const parsed = SettingsPatchSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({
+      error: "invalid settings",
+      issues: parsed.error.issues.map((issue) => `${issue.path.join(".")}: ${issue.message}`),
+    });
+    return;
+  }
+  try {
+    const runtime = settingsService.save(parsed.data);
+    res.json(maskSettings(runtime));
+  } catch (error) {
+    res.status(400).json({ error: (error as Error).message });
+  }
+});
+
+app.put("/api/settings/api-key", (req, res) => {
+  const { apiKey } = req.body as { apiKey?: unknown };
+  if (typeof apiKey !== "string" || apiKey.length > 1000) {
+    res.status(400).json({ error: "apiKey must be a string of at most 1000 characters" });
+    return;
+  }
+  const runtime = settingsService.setApiKey(apiKey);
+  res.json(maskSettings(runtime));
+});
+
+app.post("/api/settings/test", (req, res) => {
+  const body = req.body as { model?: unknown };
+  const runtime = settingsService.load();
+  const model =
+    typeof body.model === "string" && body.model.length > 0 ? body.model : runtime.settings.models.boss;
+  void probeProvider(runtime, model).then((result) => res.json(result));
+});
+
+/** Model list for the settings dropdown. Falls back to the configured ids. */
+app.get("/api/models", (_req, res) => {
+  void (async () => {
+    const runtime = settingsService.load();
+    const probe = await probeProvider(runtime, runtime.settings.models.boss);
+    const models =
+      probe.models.length > 0
+        ? probe.models
+        : [
+            runtime.settings.models.boss,
+            runtime.settings.models.worker,
+            runtime.settings.models.cheap,
+          ];
+    res.json({ models, ok: probe.ok, detail: probe.ok ? undefined : probe.detail });
+  })();
+});
+
+/** Roles plus their effective model, so the UI can show "who uses what". */
+app.get("/api/roles", (_req, res) => {
+  void (async () => {
+    const runtime = settingsService.load();
+    const team = applyRoleOverrides(
+      await loadTeam(configDir, "team.default.yaml", envForRoles(env)),
+      runtime.settings.models,
+    );
+    res.json({
+      boss: { role: team.boss.role, name: team.boss.name },
+      workers: team.workers,
+      locked: runtime.locked,
+    });
+  })().catch((error: unknown) => res.status(500).json({ error: (error as Error).message }));
 });
 
 app.get("/api/projects", (_req, res) => {
@@ -101,8 +194,9 @@ async function startRun(body: {
   const workspacePath = project?.repoPath ?? process.cwd();
   if (!existsSync(workspacePath)) throw new Error(`Workspace not found: ${workspacePath}`);
 
+  const runtime = settingsService.load();
   const team = await loadTeam(configDir, "team.default.yaml", envForRoles(env));
-  const pricing = await loadPricing();
+  const pricing = await effectivePricing(runtime);
   const controller = new AbortController();
 
   // Reserve the id up front so the client can subscribe immediately.
@@ -116,26 +210,22 @@ async function startRun(body: {
   };
   active.set(runId, record);
 
+  const approvalMode = runtime.settings.safety.approvalMode;
   const orchestrator = new Orchestrator({
     store,
-    provider: createProvider(env),
+    provider: createProviderFromSettings(runtime),
     team,
+    runtime,
     workspacePath,
     projectId: body.projectId ?? path.basename(workspacePath),
     runId,
-    approvalMode: env.APPROVAL_MODE,
-    budgetUsd: body.budgetUsd ?? env.BUDGET_USD_PER_GOAL,
+    approvalMode,
+    budgetUsd: body.budgetUsd ?? runtime.settings.limits.budgetUsdPerGoal,
     pricing,
     signal: controller.signal,
-    limits: {
-      maxConcurrentAgents: env.MAX_CONCURRENT_AGENTS,
-      maxStepsPerTask: env.MAX_STEPS_PER_TASK,
-      toolOutputMaxChars: env.TOOL_OUTPUT_MAX_CHARS,
-      taskTimeoutMinutes: env.TASK_TIMEOUT_MINUTES,
-      reviewRounds: team.team.limits.reviewRounds,
-    },
+    limits: { reviewRounds: team.team.limits.reviewRounds },
     approve: async (request: ApprovalRequest) => {
-      if (env.APPROVAL_MODE === "auto") return true;
+      if (approvalMode === "auto") return true;
       return await new Promise<boolean>((resolve) => {
         const approvalId = `ap_${Math.random().toString(36).slice(2, 10)}`;
         pendingApprovals.set(approvalId, resolve);
@@ -269,6 +359,16 @@ app.get("/api/usage", (req, res) => {
 const server = app.listen(env.PORT, env.HOST, () => {
   process.stdout.write(`Corpix server on http://${env.HOST}:${env.PORT} (provider: ${env.LLM_PROVIDER})\n`);
 });
+
+// Serve the built web app when it exists, so one URL is enough.
+const webDist = path.join(process.cwd(), "apps", "web", "dist");
+if (existsSync(webDist)) {
+  app.use(express.static(webDist));
+  app.get(/^(?!\/api|\/ws).*/, (_req, res) => {
+    res.sendFile(path.join(webDist, "index.html"));
+  });
+  process.stdout.write(`Serving the web UI from ${webDist}\n`);
+}
 
 const wss = new WebSocketServer({ server, path: "/ws" });
 

@@ -15,9 +15,11 @@ import {
   type Report,
   type Role,
   type RunStatus,
+  type RuntimeSettings,
 } from "@corpix/shared";
 import type { LLMProvider } from "../providers/types";
 import { renderPrompt, type LoadedTeam } from "../roles/loader";
+import { applyRoleOverrides } from "../config/settings-service";
 import type { AgentRunResult } from "../runtime/agent-loop";
 import { runAgent, type AgentRuntime, type TaskBrief } from "../runtime/agent-loop";
 import { BudgetGuard } from "../runtime/budget";
@@ -35,6 +37,8 @@ export interface OrchestratorOptions {
   projectId: string;
   /** Optional pre-allocated run id, e.g. when the HTTP client subscribes first. */
   runId?: string;
+  /** Resolved runtime settings from the settings service. */
+  runtime?: RuntimeSettings;
   company?: string;
   approvalMode?: ApprovalMode;
   budgetUsd?: number;
@@ -84,24 +88,48 @@ export class Orchestrator {
   private budget!: BudgetGuard;
   private mailbox = new Map<string, string[]>();
   private currentRunId = "";
+  private readonly pricing: Record<string, { input: number; output: number; cached_input?: number }>;
+  private readonly defaultBudgetUsd: number;
 
   constructor(private readonly options: OrchestratorOptions) {
     this.store = options.store;
     this.provider = options.provider;
-    this.team = options.team;
+    this.team = options.runtime
+      ? applyRoleOverrides(options.team, options.runtime.settings.models)
+      : options.team;
     this.workspacePath = options.workspacePath;
     this.projectId = options.projectId;
     this.company = options.company ?? "Corpix";
-    this.approvalMode = options.approvalMode ?? "ask";
+    this.approvalMode =
+      options.approvalMode ?? options.runtime?.settings.safety.approvalMode ?? "ask";
+    const settingsLimits = options.runtime?.settings.limits;
     this.limits = {
-      maxConcurrentAgents: options.limits?.maxConcurrentAgents ?? DEFAULT_LIMITS.maxConcurrentAgents,
-      maxStepsPerTask: options.limits?.maxStepsPerTask ?? DEFAULT_LIMITS.maxStepsPerTask,
-      toolOutputMaxChars: options.limits?.toolOutputMaxChars ?? DEFAULT_LIMITS.toolOutputMaxChars,
-      taskTimeoutMinutes: options.limits?.taskTimeoutMinutes ?? DEFAULT_LIMITS.taskTimeoutMinutes,
-      maxOutputTokens: options.limits?.maxOutputTokens ?? DEFAULT_LIMITS.maxOutputTokens,
+      maxConcurrentAgents:
+        options.limits?.maxConcurrentAgents ??
+        settingsLimits?.maxConcurrentAgents ??
+        DEFAULT_LIMITS.maxConcurrentAgents,
+      maxStepsPerTask:
+        options.limits?.maxStepsPerTask ??
+        settingsLimits?.maxStepsPerTask ??
+        DEFAULT_LIMITS.maxStepsPerTask,
+      toolOutputMaxChars:
+        options.limits?.toolOutputMaxChars ??
+        settingsLimits?.toolOutputMaxChars ??
+        DEFAULT_LIMITS.toolOutputMaxChars,
+      taskTimeoutMinutes:
+        options.limits?.taskTimeoutMinutes ??
+        settingsLimits?.taskTimeoutMinutes ??
+        DEFAULT_LIMITS.taskTimeoutMinutes,
+      maxOutputTokens:
+        options.limits?.maxOutputTokens ??
+        settingsLimits?.maxOutputTokens ??
+        DEFAULT_LIMITS.maxOutputTokens,
       reviewRounds: options.limits?.reviewRounds ?? DEFAULT_LIMITS.reviewRounds,
       planAttempts: options.limits?.planAttempts ?? DEFAULT_LIMITS.planAttempts,
     };
+    this.pricing = options.pricing ?? options.runtime?.settings.pricing ?? {};
+    this.defaultBudgetUsd =
+      options.budgetUsd ?? settingsLimits?.budgetUsdPerGoal ?? DEFAULT_LIMITS.budgetUsdPerGoal;
     this.log = options.log ?? (() => undefined);
   }
 
@@ -143,7 +171,7 @@ export class Orchestrator {
   async run(goal: string): Promise<RunOutcome> {
     const runId = this.options.runId ?? newRunId();
     this.currentRunId = runId;
-    const budgetUsd = this.options.budgetUsd ?? DEFAULT_LIMITS.budgetUsdPerGoal;
+    const budgetUsd = this.options.budgetUsd ?? this.defaultBudgetUsd;
     const startedAt = new Date().toISOString();
 
     this.store.createRun({
@@ -162,8 +190,8 @@ export class Orchestrator {
     this.jail = await WorkspaceJail.open(this.workspacePath);
     this.budget = new BudgetGuard({
       budgetUsd,
-      action: "pause",
-      pricing: this.options.pricing ?? {},
+      action: this.options.runtime?.settings.limits.budgetAction ?? "pause",
+      pricing: this.pricing,
       onRecord: (record) => {
         this.store.recordUsage({
           runId,
@@ -559,7 +587,7 @@ export class Orchestrator {
         budget: this.budget,
         jail,
         limits: {
-          maxSteps: agent.role.maxSteps,
+          maxSteps: Math.min(agent.role.maxSteps, this.limits.maxStepsPerTask),
           toolOutputMaxChars: this.limits.toolOutputMaxChars,
           commandTimeoutMs: 120_000,
           maxOutputTokens: this.limits.maxOutputTokens,

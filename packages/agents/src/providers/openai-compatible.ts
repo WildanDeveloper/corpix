@@ -11,6 +11,8 @@ export interface OpenAICompatibleOptions {
   baseUrl: string;
   apiKey?: string;
   maxTokensParam?: "max_tokens" | "max_completion_tokens";
+  /** Per-request timeout; the caller's AbortSignal still wins. */
+  timeoutMs?: number;
   /** Injected for tests; defaults to global fetch. */
   fetch?: typeof fetch;
 }
@@ -56,16 +58,17 @@ export class OpenAICompatibleProvider implements LLMProvider {
   private readonly apiKey: string;
   private readonly maxTokensParam: "max_tokens" | "max_completion_tokens";
   private readonly fetchImpl: typeof fetch;
+  private readonly timeoutMs: number;
 
   constructor(options: OpenAICompatibleOptions) {
     this.baseUrl = options.baseUrl.replace(/\/+$/, "");
     this.apiKey = options.apiKey && options.apiKey.length > 0 ? options.apiKey : "local";
     this.maxTokensParam = options.maxTokensParam ?? "max_tokens";
     this.fetchImpl = options.fetch ?? globalThis.fetch;
+    this.timeoutMs = options.timeoutMs ?? 120_000;
   }
 
-  async complete(request: CompletionRequest): Promise<CompletionResponse> {
-    const body: Record<string, unknown> = {
+  async complete(request: CompletionRequest): Promise<CompletionResponse> {    const body: Record<string, unknown> = {
       model: request.model,
       messages: toChatMessages(request.system, request.messages),
       tools: request.tools.map((tool) => ({
@@ -88,6 +91,8 @@ export class OpenAICompatibleProvider implements LLMProvider {
     if (request.temperature !== undefined) body.temperature = request.temperature;
 
     let response: Response;
+    const timeout = AbortSignal.timeout(this.timeoutMs);
+    const signal = request.signal ? AbortSignal.any([request.signal, timeout]) : timeout;
     try {
       response = await this.fetchImpl(`${this.baseUrl}/chat/completions`, {
         method: "POST",
@@ -96,10 +101,15 @@ export class OpenAICompatibleProvider implements LLMProvider {
           authorization: `Bearer ${this.apiKey}`,
         },
         body: JSON.stringify(body),
-        signal: request.signal,
+        signal,
       });
     } catch (error) {
-      throw new ProviderError(`Network error calling provider: ${(error as Error).message}`);
+      const aborted = (error as Error).name === "TimeoutError" || (error as Error).name === "AbortError";
+      throw new ProviderError(
+        aborted
+          ? `Provider request timed out after ${this.timeoutMs}ms`
+          : `Network error calling provider: ${(error as Error).message}`,
+      );
     }
 
     if (!response.ok) {
@@ -138,6 +148,23 @@ export class OpenAICompatibleProvider implements LLMProvider {
         cachedInputTokens: data.usage?.prompt_tokens_details?.cached_tokens,
       },
     };
+  }
+
+  /** Fetch the model ids exposed by the server, for the settings dropdown. */
+  async listModels(): Promise<string[]> {
+    const response = await this.fetchImpl(`${this.baseUrl}/models`, {
+      headers: { authorization: `Bearer ${this.apiKey}` },
+      signal: AbortSignal.timeout(15_000),
+    }).catch((error: Error) => {
+      throw new ProviderError(`Could not list models: ${error.message}`);
+    });
+    if (!response.ok) {
+      throw new ProviderError(`Provider returned ${response.status} for /models`, response.status);
+    }
+    const data = (await response.json()) as { data?: Array<{ id?: unknown }> };
+    return (data.data ?? [])
+      .map((entry) => entry.id)
+      .filter((id): id is string => typeof id === "string" && id.length > 0);
   }
 }
 

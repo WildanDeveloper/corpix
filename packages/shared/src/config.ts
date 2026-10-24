@@ -7,6 +7,8 @@ export const RoleSchema = z.object({
   sprite: z.string().default("palette-blue"),
   model: z.string().min(1),
   maxSteps: z.number().int().positive().default(40),
+  /** Sampling temperature; provider default when omitted. */
+  temperature: z.number().min(0).max(2).optional(),
   tools: z.array(z.string()).min(1),
   scope: z.object({
     write: z.array(z.string()).default([]),

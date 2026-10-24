@@ -6,4 +6,5 @@ export * from "./ids";
 export * from "./messages";
 export * from "./plan";
 export * from "./report";
+export * from "./settings";
 export * from "./utils";

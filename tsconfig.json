@@ -23,5 +23,5 @@
     },
     "types": ["node"]
   },
-  "include": ["packages/**/*.ts", "apps/**/*.ts", "tests/**/*.ts", "vitest.config.ts"]
+  "include": ["packages/**/*.ts", "apps/cli/**/*.ts", "apps/server/**/*.ts", "tests/**/*.ts", "vitest.config.ts"]
 }

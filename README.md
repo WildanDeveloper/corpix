@@ -24,17 +24,23 @@ design lives in [`docs/DESIGN.md`](./docs/DESIGN.md).
 - **Scheduler** — topological dependency graph with `MAX_CONCURRENT_AGENTS`.
 - **SQLite persistence** — runs, tasks, agents, messages, events, usage and
   approvals, with WAL and `busy_timeout`.
+- **Runtime settings** — provider, API key, per-tier and per-role models, step
+  caps, output caps, budget, approval mode and pricing are editable from the web
+  UI, the API or the CLI. No restart needed.
+- **Web UI (first pass)** — a dispatch/activity/approvals view and a full
+  settings panel, built with React + Vite. The pixel-art office is still to come.
 - **Safety primitives** — workspace jail (`realpath` + trailing separator),
   protected files, write scopes, command policy, scrubbed child environment.
-- **CLI** — `run`, `runs`, `replay`, `team`, `pricing`, `migrate`.
-- **HTTP/WS server** — health, projects, runs, events, approvals, usage and a
-  WebSocket event stream with `?since=` reconnect. The web UI is not built yet.
-- **57 tests** covering the jail, glob matching, command policy, plan
-  validation, budget maths, provider mapping and an end-to-end mock run.
+- **CLI** — `run`, `runs`, `replay`, `team`, `settings`, `pricing`, `migrate`.
+- **HTTP/WS server** — health, projects, runs, events, approvals, usage,
+  settings, models and a WebSocket event stream with `?since=` reconnect.
+- **90 tests** covering the jail, glob matching, command policy, plan
+  validation, budget maths, provider mapping, settings precedence and an
+  end-to-end mock run.
 
 Not implemented yet: git worktrees and merging, QA review rounds, Docker
-sandbox, approvals UI, prompt caching, context summarisation, resume after a
-crash, the React/PixiJS office, and a production build/packaging step.
+sandbox, prompt caching, context summarisation, resume after a crash, the
+pixel-art office, and a production packaging step.
 
 ## Quick start
 
@@ -69,15 +75,73 @@ pnpm cli run "Add a /health endpoint" \
 `auto-safe` allows allowlisted test/lint/build commands, `auto` approves
 everything except hard denials.
 
-### Server
+### Server and web UI
 
 ```bash
-pnpm dev            # http://127.0.0.1:3001
-curl http://127.0.0.1:3001/api/health
+pnpm dev            # API on :3001, Vite UI on :5173
+# or serve the built UI from the API:
+pnpm build
+pnpm --filter @corpix/server start   # http://127.0.0.1:3001
 ```
+
+Open the UI, register a project (`POST /api/projects` or the Office tab once a
+project exists), then dispatch a goal. Settings are under the **Settings** tab
+and apply to the next run immediately.
 
 REST endpoints match the target design; the WebSocket is at
 `ws://127.0.0.1:3001/ws?runId=<id>&since=<seq>`.
+
+## Settings (no restart, not hardcoded)
+
+Everything an operator usually edits lives in SQLite and is editable from the
+Settings tab, `PATCH /api/settings`, or the CLI — no `.env` editing, no restart.
+
+| Area | What you can change |
+|---|---|
+| Provider | `mock` or `openai-compatible`, base URL, `max_tokens` vs `max_completion_tokens`, request timeout |
+| API key | stored in `data/secrets.json` (mode 600), **never** in SQLite and never returned to the browser |
+| Models | Boss / worker / cheap model ids |
+| Per-agent | model, max steps and temperature for any role, overriding the tier default |
+| Limits | concurrency, steps per task, task timeout, tool output cap, max output tokens, budget per goal, budget action |
+| Safety | approval mode, sandbox |
+| Pricing | USD per million input/output/cached tokens per model |
+
+**Precedence.** Environment variables win when they are set, so a deployment can
+pin a provider or key. `GET /api/settings` returns a `locked` array with the
+dotted paths that the UI should disable. Everything else comes from the database;
+the database is seeded from the environment on first boot.
+
+```bash
+# CLI equivalents
+pnpm cli settings
+pnpm cli settings set models.boss=gpt-4o-mini limits.maxStepsPerTask=20
+pnpm cli settings set models.roles.qa.model=gpt-4o-mini models.roles.qa.temperature=0.2
+pnpm cli settings key sk-...        # data/secrets.json, mode 600
+pnpm cli settings test              # one cheap provider round trip
+```
+
+```http
+GET   /api/settings
+PATCH /api/settings
+PUT   /api/settings/api-key
+POST  /api/settings/test
+GET   /api/models
+GET   /api/roles
+```
+
+Example patch:
+
+```json
+{
+  "models": {
+    "boss": "strong-model",
+    "worker": "balanced-model",
+    "roles": { "qa": { "model": "cheap-model", "maxSteps": 12, "temperature": 0.2 } }
+  },
+  "limits": { "maxOutputTokens": 4096, "budgetUsdPerGoal": 3 },
+  "safety": { "approvalMode": "ask" }
+}
+```
 
 ## Commands
 
@@ -89,24 +153,31 @@ REST endpoints match the target design; the WebSocket is at
 | `pnpm cli team` | Show the loaded team and rendered prompt preview |
 | `pnpm cli pricing` | Show the pricing table |
 | `pnpm cli migrate` | Create or migrate the SQLite database |
+| `pnpm cli settings` | Print effective settings |
+| `pnpm cli settings set a.b=value` | Change settings from the terminal |
+| `pnpm cli settings key <key>` | Store the API key outside the database |
+| `pnpm cli settings test` | Probe the provider |
 | `pnpm test` | Run the test suite |
 | `pnpm typecheck` | `tsc --noEmit` |
-| `pnpm dev` | Start the HTTP/WS server |
+| `pnpm dev` | Server and Vite UI together |
 
 ## Configuration
 
-Environment variables are documented in `.env.example`. Roles and the team are
-YAML in `config/roles/*.yaml` and `config/team.default.yaml`; model ids use
-`${BOSS_MODEL}`, `${WORKER_MODEL}` and `${CHEAP_MODEL}`. Put real prices in
-`config/pricing.yaml`, otherwise the cost meter and budget cap read 0.
+Environment variables are documented in `.env.example`. They only act as
+defaults and as optional pins: after the first boot, runtime settings live in
+the database and are edited from the UI. Roles and the team are YAML in
+`config/roles/*.yaml` and `config/team.default.yaml`; `${BOSS_MODEL}`,
+`${WORKER_MODEL}` and `${CHEAP_MODEL}` are filled from the effective settings,
+and per-role overrides take precedence over both.
 
 ## Architecture
 
 ```text
-apps/cli        headless runner and DB migration
+apps/web        React + Vite: dispatch, activity log, approvals, settings
+apps/cli        headless runner, settings commands and DB migration
 apps/server     Express + ws + SQLite implementation of the Store contract
 packages/agents providers, runtime (loop, budget, context), tools, orchestrator, roles
-packages/shared Zod schemas, event types, constants, errors
+packages/shared Zod schemas, event types, settings schemas, constants, errors
 config/         team, roles, pricing
 tests/          vitest suites
 ```

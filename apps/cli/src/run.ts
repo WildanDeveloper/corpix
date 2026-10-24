@@ -2,22 +2,19 @@ import { existsSync } from "node:fs";
 import path from "node:path";
 import {
   Orchestrator,
-  createProvider,
+  applyRoleOverrides,
+  createProviderFromSettings,
   envForRoles,
   loadTeam,
   type ApprovalRequest,
 } from "@corpix/agents";
-import {
-  assertSafeBinding,
-  parseEnv,
-  type Env,
-} from "@corpix/shared";
-import { openMigrated, SqliteStore } from "@corpix/server/db";
+import { assertSafeBinding, maskSettings, type Env } from "@corpix/shared";
 import { createInterface } from "node:readline/promises";
 import { stdin, stdout } from "node:process";
 import "dotenv/config";
 import YAML from "yaml";
 import { readFile } from "node:fs/promises";
+import { openRuntime } from "./runtime";
 
 export interface CliOptions {
   goal: string;
@@ -42,14 +39,18 @@ export async function loadPricing(configDir: string): Promise<Record<string, { i
 export async function runGoal(options: CliOptions, env: Env): Promise<number> {
   assertSafeBinding(env);
   const configDir = options.configDir ?? path.join(process.cwd(), "config");
-  const team = await loadTeam(configDir, options.team ?? "team.default.yaml", envForRoles(env));
-  const pricing = await loadPricing(configDir);
-  const store = new SqliteStore(openMigrated(path.join(env.DATA_DIR, "corpix.sqlite")));
-  const provider = createProvider(env);
+  const bundle = openRuntime(env);
+  const runtime = bundle.service.load();
+  const team = applyRoleOverrides(
+    await loadTeam(configDir, options.team ?? "team.default.yaml", envForRoles(env)),
+    runtime.settings.models,
+  );
+  const pricing = { ...(await loadPricing(configDir)), ...runtime.settings.pricing };
+  const provider = createProviderFromSettings(runtime);
   const runId = `run_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
 
   const rl = createInterface({ input: stdin, output: stdout });
-  const approvalMode = options.approval ?? env.APPROVAL_MODE;
+  const approvalMode = options.approval ?? runtime.settings.safety.approvalMode;
 
   const approve = async (request: ApprovalRequest): Promise<boolean> => {
     if (approvalMode === "auto") return true;
@@ -64,23 +65,18 @@ export async function runGoal(options: CliOptions, env: Env): Promise<number> {
   };
 
   const orchestrator = new Orchestrator({
-    store,
+    store: bundle.store,
     provider,
     team,
+    runtime,
     workspacePath: path.resolve(options.project),
     projectId: path.basename(path.resolve(options.project)),
     runId,
     approvalMode,
-    budgetUsd: options.budget ?? env.BUDGET_USD_PER_GOAL,
+    budgetUsd: options.budget ?? runtime.settings.limits.budgetUsdPerGoal,
     pricing,
     approve,
-    limits: {
-      maxConcurrentAgents: env.MAX_CONCURRENT_AGENTS,
-      maxStepsPerTask: env.MAX_STEPS_PER_TASK,
-      toolOutputMaxChars: env.TOOL_OUTPUT_MAX_CHARS,
-      taskTimeoutMinutes: env.TASK_TIMEOUT_MINUTES,
-      reviewRounds: team.team.limits.reviewRounds,
-    },
+    limits: { reviewRounds: team.team.limits.reviewRounds },
     onEvent: (envelope) => {
       if (options.quiet) return;
       const stamp = envelope.ts.slice(11, 19);
@@ -101,9 +97,11 @@ export async function runGoal(options: CliOptions, env: Env): Promise<number> {
     return outcome.status === "completed" ? 0 : 1;
   } finally {
     rl.close();
-    store.close();
+    bundle.close();
   }
 }
+
+export { maskSettings };
 
 function summariseEvent(type: string, payload: Record<string, unknown>): string {
   if (type === "tool.called") return `${payload.agentId} -> ${payload.tool}`;
@@ -114,5 +112,3 @@ function summariseEvent(type: string, payload: Record<string, unknown>): string 
   if (type === "plan.created") return `${payload.taskCount} tasks`;
   return "";
 }
-
-export { parseEnv };

@@ -189,6 +189,7 @@ export async function runAgent(
       tools: schemasForRole(agent.role, options.roleIds),
       toolChoice: forced,
       maxTokens: options.limits.maxOutputTokens,
+      temperature: agent.role.temperature,
       signal: options.signal,
     });
 

@@ -83,6 +83,15 @@ export interface MessageRow {
   content: unknown;
 }
 
+export interface SettingsStore {
+  /** Persisted settings JSON, or null on first boot. */
+  readSettings(): unknown | null;
+  writeSettings(settings: unknown): void;
+  /** The API key is kept outside the database in production. */
+  readApiKey(): string;
+  writeApiKey(apiKey: string): void;
+}
+
 /**
  * Storage contract. The SQLite implementation lives in the server; tests use
  * an in-memory implementation so the runtime stays dependency-free.
@@ -118,6 +127,11 @@ export interface Store {
 
   appendMessage(row: MessageRow): void;
   listMessages(taskId: string): MessageRow[];
+
+  readSettings(): unknown | null;
+  writeSettings(settings: unknown): void;
+  readApiKey(): string;
+  writeApiKey(apiKey: string): void;
 
   close(): void;
 }
@@ -241,6 +255,25 @@ export class MemoryStore implements Store {
 
   listMessages(taskId: string): MessageRow[] {
     return this.messages.filter((row) => row.taskId === taskId).sort((a, b) => a.idx - b.idx);
+  }
+
+  private settings: unknown | null = null;
+  private apiKey = "";
+
+  readSettings(): unknown | null {
+    return this.settings;
+  }
+
+  writeSettings(settings: unknown): void {
+    this.settings = settings;
+  }
+
+  readApiKey(): string {
+    return this.apiKey;
+  }
+
+  writeApiKey(apiKey: string): void {
+    this.apiKey = apiKey;
   }
 
   close(): void {

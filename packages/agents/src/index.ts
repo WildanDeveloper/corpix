@@ -2,6 +2,9 @@ export * from "./providers/types";
 export * from "./providers/openai-compatible";
 export * from "./providers/mock";
 export * from "./providers/index";
+export * from "./providers/probe";
+
+export * from "./config/settings-service";
 
 export * from "./runtime/agent-loop";
 export * from "./runtime/budget";

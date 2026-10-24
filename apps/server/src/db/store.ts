@@ -1,4 +1,11 @@
 import {
+  chmodSync,
+  mkdirSync,
+  readFileSync,
+  writeFileSync,
+} from "node:fs";
+import path from "node:path";
+import {
   EventEnvelopeSchema,
   type EventEnvelope,
   type Plan,
@@ -28,7 +35,10 @@ function parse<T>(text: string | null | undefined, fallback: T): T {
 }
 
 export class SqliteStore implements Store {
-  constructor(private readonly db: Db) {}
+  constructor(
+    private readonly db: Db,
+    private readonly secretsFile?: string,
+  ) {}
 
   // --- projects -------------------------------------------------------------
   createProject(project: ProjectRecord): void {
@@ -338,6 +348,47 @@ export class SqliteStore implements Store {
       role: row.role as string,
       content: parse(row.content_json as string, []),
     }));
+  }
+
+  // --- settings -------------------------------------------------------------
+  readSettings(): unknown | null {
+    const row = this.db.prepare("SELECT value FROM settings WHERE key = 'app'").get() as
+      | { value: string }
+      | undefined;
+    if (!row) return null;
+    return parse<unknown>(row.value, null);
+  }
+
+  writeSettings(settings: unknown): void {
+    this.db
+      .prepare("INSERT INTO settings (key, value) VALUES ('app', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
+      .run(JSON.stringify(settings));
+  }
+
+  /**
+   * API keys never enter SQLite. They live in `data/secrets.json` with mode
+   * 0600, or in the environment. `/settings` only ever returns a masked preview.
+   */
+  readApiKey(): string {
+    if (!this.secretsFile) return "";
+    try {
+      const raw = readFileSync(this.secretsFile, "utf8");
+      const parsed = JSON.parse(raw) as { apiKey?: unknown };
+      return typeof parsed.apiKey === "string" ? parsed.apiKey : "";
+    } catch {
+      return "";
+    }
+  }
+
+  writeApiKey(apiKey: string): void {
+    if (!this.secretsFile) return;
+    mkdirSync(path.dirname(path.resolve(this.secretsFile)), { recursive: true });
+    writeFileSync(
+      this.secretsFile,
+      JSON.stringify({ apiKey }, null, 2) + "\n",
+      { encoding: "utf8", mode: 0o600 },
+    );
+    chmodSync(this.secretsFile, 0o600);
   }
 
   close(): void {

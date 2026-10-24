@@ -1,6 +1,12 @@
 import path from "node:path";
-import { loadTeam, renderPrompt, envForRoles } from "@corpix/agents";
-import { parseEnv } from "@corpix/shared";
+import {
+  SettingsService,
+  applyRoleOverrides,
+  envForRoles,
+  loadTeam,
+  probeProvider,
+} from "@corpix/agents";
+import { maskSettings, parseEnv, type SettingsPatch } from "@corpix/shared";
 import { openMigrated, SqliteStore } from "@corpix/server/db";
 import "dotenv/config";
 import { runGoal, loadPricing } from "./run";
@@ -22,6 +28,8 @@ async function main(): Promise<number> {
       return showTeam(configDir, env);
     case "pricing":
       return showPricing(configDir);
+    case "settings":
+      return settingsCommand(rest, env);
     case "migrate":
       return migrate(env);
     case "help":
@@ -33,6 +41,13 @@ async function main(): Promise<number> {
       printHelp();
       return 2;
   }
+}
+
+function openStore(env: ReturnType<typeof parseEnv>): SqliteStore {
+  return new SqliteStore(
+    openMigrated(path.join(env.DATA_DIR, "corpix.sqlite")),
+    path.join(env.DATA_DIR, "secrets.json"),
+  );
 }
 
 async function runCommand(args: string[], env: ReturnType<typeof parseEnv>): Promise<number> {
@@ -72,7 +87,7 @@ function flag(args: string[], name: string): string | undefined {
 }
 
 function listRuns(env: ReturnType<typeof parseEnv>): number {
-  const store = new SqliteStore(openMigrated(path.join(env.DATA_DIR, "corpix.sqlite")));
+  const store = openStore(env);
   const runs = store.listRuns();
   if (runs.length === 0) {
     process.stdout.write("No runs yet.\n");
@@ -92,7 +107,7 @@ function replay(runId: string | undefined, env: ReturnType<typeof parseEnv>): nu
     process.stderr.write("Usage: pnpm cli replay <run-id>\n");
     return 2;
   }
-  const store = new SqliteStore(openMigrated(path.join(env.DATA_DIR, "corpix.sqlite")));
+  const store = openStore(env);
   const events = store.listEvents(runId);
   if (events.length === 0) {
     process.stderr.write(`No events for ${runId}\n`);
@@ -108,26 +123,25 @@ function replay(runId: string | undefined, env: ReturnType<typeof parseEnv>): nu
 }
 
 async function showTeam(configDir: string, env: ReturnType<typeof parseEnv>): Promise<number> {
-  const team = await loadTeam(configDir, "team.default.yaml", envForRoles(env));
+  const store = openStore(env);
+  const service = new SettingsService(store, process.env, env);
+  const runtime = service.load();
+  const team = applyRoleOverrides(
+    await loadTeam(configDir, "team.default.yaml", envForRoles(env)),
+    runtime.settings.models,
+  );
   process.stdout.write(`${team.team.name}\n`);
-  process.stdout.write(`Boss: ${team.boss.name} (${team.boss.role.id})\n`);
+  process.stdout.write(`Boss: ${team.boss.name} (${team.boss.role.id}) -> ${team.boss.role.model}\n`);
   for (const worker of team.workers) {
     const role = worker.role;
     process.stdout.write(
-      `- ${worker.name} (${role.id}): model ${role.model}, ${role.maxSteps} steps, writes ${role.scope.write.join(", ") || "nothing"}\n`,
+      `- ${worker.name} (${role.id}) -> ${role.model}, ${role.maxSteps} steps, writes ${role.scope.write.join(", ") || "nothing"}\n`,
     );
   }
-  process.stdout.write(
-    `\nPrompt preview (${team.boss.role.id}):\n${renderPrompt(team.boss.role.systemPrompt, {
-      name: team.boss.name,
-      title: team.boss.role.title,
-      company: "Corpix",
-      workspace: process.cwd(),
-      role: team.boss.role,
-      bossName: team.boss.name,
-      roles: [...team.roles.keys()],
-    }).slice(0, 400)}...\n`,
-  );
+  if (runtime.locked.length > 0) {
+    process.stdout.write(`\nPinned by environment: ${runtime.locked.join(", ")}\n`);
+  }
+  store.close();
   return 0;
 }
 
@@ -135,7 +149,7 @@ async function showPricing(configDir: string): Promise<number> {
   const pricing = await loadPricing(configDir);
   const models = Object.keys(pricing);
   if (models.length === 0) {
-    process.stdout.write("No pricing entries. Fill in config/pricing.yaml.\n");
+    process.stdout.write("No pricing entries. Fill in config/pricing.yaml or use the settings page.\n");
     return 0;
   }
   for (const model of models) {
@@ -145,8 +159,88 @@ async function showPricing(configDir: string): Promise<number> {
   return 0;
 }
 
+/**
+ * `pnpm cli settings` prints the effective settings.
+ * `pnpm cli settings set models.boss=gpt-4o-mini limits.maxStepsPerTask=20`
+ * `pnpm cli settings key sk-...` stores the API key outside the database.
+ * `pnpm cli settings test` probes the provider.
+ */
+async function settingsCommand(args: string[], env: ReturnType<typeof parseEnv>): Promise<number> {
+  const store = openStore(env);
+  const service = new SettingsService(store, process.env, env);
+
+  try {
+    if (args[0] === "key") {
+      const key = args[1];
+      if (!key) {
+        process.stderr.write("Usage: pnpm cli settings key <api-key>\n");
+        return 2;
+      }
+      const runtime = service.setApiKey(key);
+      process.stdout.write(`API key saved. ${maskSettings(runtime).apiKeyPreview}\n`);
+      return 0;
+    }
+
+    if (args[0] === "test") {
+      const runtime = service.load();
+      const result = await probeProvider(runtime, runtime.settings.models.boss);
+      process.stdout.write(`${result.ok ? "OK" : "FAILED"}: ${result.detail}\n`);
+      if (result.models.length > 0) {
+        process.stdout.write(`Models: ${result.models.slice(0, 20).join(", ")}\n`);
+      }
+      return result.ok ? 0 : 1;
+    }
+
+    if (args[0] === "set") {
+      const patch: Record<string, Record<string, unknown>> = {};
+      for (const pair of args.slice(1)) {
+        const index = pair.indexOf("=");
+        if (index === -1) {
+          process.stderr.write(`Ignoring "${pair}": expected path=value\n`);
+          continue;
+        }
+        const dotted = pair.slice(0, index);
+        const raw = pair.slice(index + 1);
+        const [section, key, ...rest] = dotted.split(".");
+        if (!section || !key) {
+          process.stderr.write(`Ignoring "${pair}": expected section.key=value\n`);
+          continue;
+        }
+        const value = coerce(raw);
+        if (section === "models" && key === "roles" && rest.length === 2) {
+          const [roleId, field] = rest as [string, string];
+          const roles = (patch.models?.roles as Record<string, Record<string, unknown>>) ?? {};
+          roles[roleId] = { ...(roles[roleId] ?? {}), [field]: value };
+          patch.models = { ...(patch.models ?? {}), roles };
+          continue;
+        }
+        patch[section] = { ...(patch[section] ?? {}), [key]: value };
+      }
+      const runtime = service.save(patch as SettingsPatch);
+      process.stdout.write(`${JSON.stringify(runtime.settings, null, 2)}\n`);
+      if (runtime.locked.length > 0) {
+        process.stdout.write(`Pinned by environment (ignored): ${runtime.locked.join(", ")}\n`);
+      }
+      return 0;
+    }
+
+    const runtime = service.load();
+    process.stdout.write(`${JSON.stringify(maskSettings(runtime), null, 2)}\n`);
+    return 0;
+  } finally {
+    store.close();
+  }
+}
+
+function coerce(raw: string): unknown {
+  if (raw === "true") return true;
+  if (raw === "false") return false;
+  if (raw !== "" && !Number.isNaN(Number(raw))) return Number(raw);
+  return raw;
+}
+
 function migrate(env: ReturnType<typeof parseEnv>): number {
-  const store = new SqliteStore(openMigrated(path.join(env.DATA_DIR, "corpix.sqlite")));
+  const store = openStore(env);
   process.stdout.write(`Migrated ${path.join(env.DATA_DIR, "corpix.sqlite")}\n`);
   store.close();
   return 0;
@@ -160,8 +254,13 @@ function printHelp(): void {
       "  pnpm cli run \"Build a REST API\" --project ./workspaces/todo --budget 3 --approval ask",
       "  pnpm cli runs                 List past runs",
       "  pnpm cli replay <run-id>      Replay a run from its event log",
-      "  pnpm cli team                 Show the loaded team and roles",
+      "  pnpm cli team                 Show the team with effective models",
       "  pnpm cli pricing              Show the pricing table",
+      "  pnpm cli settings             Print effective settings",
+      "  pnpm cli settings set models.boss=gpt-4o limits.maxStepsPerTask=20",
+      "  pnpm cli settings set models.roles.qa.model=gpt-4o-mini",
+      "  pnpm cli settings key <key>   Store the API key (data/secrets.json, mode 600)",
+      "  pnpm cli settings test        Probe the provider",
       "  pnpm cli migrate              Create or migrate the SQLite database",
       "",
     ].join("\n"),
