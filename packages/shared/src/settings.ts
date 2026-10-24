@@ -51,11 +51,25 @@ export const SafetySettingsSchema = z.object({
 });
 export type SafetySettings = z.infer<typeof SafetySettingsSchema>;
 
+export const GitSettingsSchema = z.object({
+  /** One worktree and branch per task; merge into the integration branch. */
+  enabled: z.boolean().default(true),
+  integrationBranch: z
+    .string()
+    .min(1)
+    .regex(/^[A-Za-z0-9._/-]+$/, "use a valid branch name")
+    .default("integration"),
+  /** Optional absolute path for worktrees; defaults to a sibling directory. */
+  worktreesDir: z.string().optional(),
+});
+export type GitSettings = z.infer<typeof GitSettingsSchema>;
+
 export const AppSettingsSchema = z.object({
   provider: ProviderSettingsSchema,
   models: ModelSettingsSchema,
   limits: LimitSettingsSchema,
   safety: SafetySettingsSchema,
+  git: GitSettingsSchema.default({ enabled: true, integrationBranch: "integration" }),
   pricing: PricingSchema.default({}),
   updatedAt: z.string().optional(),
 });
@@ -73,6 +87,7 @@ export const SettingsPatchSchema = z.object({
     .optional(),
   limits: LimitSettingsSchema.partial().optional(),
   safety: SafetySettingsSchema.partial().optional(),
+  git: GitSettingsSchema.partial().optional(),
   pricing: PricingSchema.optional(),
 });
 export type SettingsPatch = z.infer<typeof SettingsPatchSchema>;
@@ -101,6 +116,7 @@ export function defaultSettings(): AppSettings {
     models: {},
     limits: {},
     safety: {},
+    git: {},
     pricing: {},
   });
 }
@@ -147,6 +163,7 @@ export function settingsFromEnv(env: {
       approvalMode: env.APPROVAL_MODE,
       sandbox: env.SANDBOX,
     },
+    git: {},
   });
 }
 
@@ -175,6 +192,7 @@ export function mergeSettings(current: AppSettings, patch: SettingsPatch): AppSe
     },
     limits: { ...current.limits, ...(patch.limits ?? {}) },
     safety: { ...current.safety, ...(patch.safety ?? {}) },
+    git: { ...current.git, ...(patch.git ?? {}) },
     pricing: patch.pricing ?? current.pricing,
     updatedAt: new Date().toISOString(),
   };
@@ -222,6 +240,7 @@ export function resolveSettings(
     models: { ...stored.models, roles: { ...stored.models.roles } },
     limits: { ...stored.limits },
     safety: { ...stored.safety },
+    git: { ...stored.git },
     pricing: { ...stored.pricing },
   };
   const locked: string[] = [];

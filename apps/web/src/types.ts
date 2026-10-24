@@ -40,6 +40,12 @@ export interface SafetySettings {
   sandbox: "none" | "docker";
 }
 
+export interface GitSettings {
+  enabled: boolean;
+  integrationBranch: string;
+  worktreesDir?: string;
+}
+
 export interface PricingEntry {
   input: number;
   output: number;
@@ -51,6 +57,7 @@ export interface AppSettings {
   models: ModelSettings;
   limits: LimitSettings;
   safety: SafetySettings;
+  git: GitSettings;
   pricing: Record<string, PricingEntry>;
   updatedAt?: string;
 }

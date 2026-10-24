@@ -21,6 +21,10 @@ export const EventTypeSchema = z.enum([
   "meeting.ended",
   "approval.requested",
   "approval.resolved",
+  "git.ready",
+  "git.worktree_created",
+  "git.merged",
+  "git.conflict",
   "usage.updated",
   "error",
 ]);

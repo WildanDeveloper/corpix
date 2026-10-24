@@ -21,6 +21,7 @@ import {
 import type { LLMProvider } from "../providers/types";
 import { renderPrompt, type LoadedTeam } from "../roles/loader";
 import { applyRoleOverrides, capTeamSteps } from "../config/settings-service";
+import { GitWorkspace, type Worktree } from "../git/workspace";
 import { ContextManager } from "../runtime/context";
 import type { AgentRunResult } from "../runtime/agent-loop";
 import { runAgent, type AgentRuntime, type TaskBrief } from "../runtime/agent-loop";
@@ -90,7 +91,11 @@ export class Orchestrator {
   private readonly approvalMode: ApprovalMode;
   private readonly limits: Required<NonNullable<OrchestratorOptions["limits"]>>;
   private readonly log: (message: string) => void;
-  private jail?: WorkspaceJail;
+  private baseJail?: WorkspaceJail;
+  private integrationJail?: WorkspaceJail;
+  private git?: GitWorkspace;
+  private worktrees = false;
+  private gitQueue: Promise<unknown> = Promise.resolve();
   private budget!: BudgetGuard;
   private mailbox = new Map<string, string[]>();
   private currentRunId = "";
@@ -201,7 +206,7 @@ export class Orchestrator {
       summary: null,
     });
 
-    this.jail = await WorkspaceJail.open(this.workspacePath);
+    this.baseJail = await WorkspaceJail.open(this.workspacePath);
     this.budget = new BudgetGuard({
       budgetUsd,
       action: this.options.runtime?.settings.limits.budgetAction ?? "pause",
@@ -231,10 +236,13 @@ export class Orchestrator {
     });
 
     try {
+      await this.prepareGit();
       const plan = await this.plan(runId, goal);
       const { tasks, planByTaskId } = this.persistPlan(runId, plan);
-      const finished = await this.execute(runId, tasks, planByTaskId);
-      const summary = summarise(goal, finished);
+      const executed = await this.execute(runId, tasks, planByTaskId);
+      await this.mergeFinished(runId, executed);
+      const finished = executed.map((task) => this.store.getTask(task.id) ?? task);
+      const summary = summarise(goal, finished, this.git?.integrationBranch);
       const paused = this.budget.isPaused || this.budget.isStopped;
       // A blocked task means the goal was not achieved, so the run is not
       // "completed" just because nothing crashed.
@@ -296,6 +304,105 @@ export class Orchestrator {
   }
 
   /** Boss plans; the plan is validated and retried on failure. */
+  /**
+   * Set up the integration branch and per-task worktrees. Falls back to the
+   * shared workspace when git is disabled or the target is not a repository.
+   */
+  private async prepareGit(): Promise<void> {
+    const config = this.options.runtime?.settings.git;
+    if (config && !config.enabled) {
+      this.worktrees = false;
+      return;
+    }
+    try {
+      const workspace = await GitWorkspace.open(this.workspacePath, {
+        integrationBranch: config?.integrationBranch ?? "integration",
+        worktreesDir: config?.worktreesDir,
+      });
+      if (!(await workspace.isClean())) {
+        this.log("Workspace has uncommitted changes; agents share one workspace this run.");
+        this.worktrees = false;
+        return;
+      }
+      const { created, branch } = await workspace.ensureIntegrationBranch();
+      this.git = workspace;
+      this.worktrees = true;
+      this.integrationJail = await WorkspaceJail.open(
+        await workspace.ensureIntegrationWorktree(),
+      );
+      this.emit({
+        type: "git.ready",
+        payload: {
+          branch,
+          created,
+          worktreesDir: workspace.worktreesRoot,
+          isolation: "worktree",
+        },
+      });
+    } catch (error) {
+      // Not a repo, or a branch we must not touch: run without isolation.
+      this.worktrees = false;
+      this.log(`Git isolation disabled: ${(error as Error).message}`);
+    }
+  }
+
+  private async createWorktree(task: TaskRecord): Promise<Worktree | null> {
+    if (!this.git) return null;
+    const git = this.git;
+    const worktree = await this.serialiseGit(() => git.createWorktree(task.id, task.role));
+    this.emit({
+      type: "git.worktree_created",
+      payload: { taskId: task.id, branch: worktree.branch, path: worktree.path },
+    });
+    return worktree;
+  }
+
+  /** Commit whatever the agent produced so the branch can be merged. */
+  private async commitTask(task: TaskRecord, worktree: Worktree): Promise<boolean> {
+    if (!this.git) return false;
+    const git = this.git;
+    try {
+      const result = await this.serialiseGit(() =>
+        git.commitAll(
+          worktree.path,
+          `${task.role}: ${task.title}\n\nTask ${task.id} of run ${task.runId}`,
+        ),
+      );
+      if (!result.committed) {
+        // No changes: drop the empty branch so the repo stays tidy.
+        await this.serialiseGit(() => git.removeWorktree(worktree.path));
+        return false;
+      }
+      return true;
+    } catch (error) {
+      this.emit({
+        type: "error",
+        payload: {
+          message: `Could not commit ${task.role} work: ${(error as Error).message}`,
+          code: "git_commit_failed",
+          taskId: task.id,
+        },
+      });
+      return false;
+    }
+  }
+
+  /** Release the integration worktree once the run is over. */
+  private async mergeFinished(runId: string, tasks: TaskRecord[]): Promise<TaskRecord[]> {
+    void runId;
+    if (this.git) {
+      await this.serialiseGit(() => this.git!.releaseIntegrationWorktree()).catch(() => undefined);
+    }
+    return tasks;
+  }
+
+  /** git operations mutate shared refs, so run them one at a time. */
+  private serialiseGit<T>(operation: () => Promise<T>): Promise<T> {
+    const next = this.gitQueue.then(operation, operation);
+    this.gitQueue = next.catch(() => undefined);
+    return next;
+  }
+
   private async plan(runId: string, goal: string): Promise<Plan> {
     const boss = this.team.boss;
     const agentId = newAgentId("boss");
@@ -325,7 +432,7 @@ export class Orchestrator {
         instructions: [
           `Goal from the user: ${goal}`,
           "",
-          `Workspace: ${this.workspacePath}`,
+          `Workspace: ${this.integrationJail?.root ?? this.workspacePath}`,
           `Roles available: ${this.roleIds().join(", ")}`,
           "",
           "Write scopes (a role can only write inside its own list):",
@@ -363,9 +470,14 @@ export class Orchestrator {
       const validation = validatePlan(result.plan, this.roleIds());
       if (validation.ok) {
         this.store.updateRun(runId, { plan: result.plan, status: "running" });
+        await this.commitSpec(runId);
         this.emit({
           type: "plan.created",
-          payload: { plan: result.plan, taskCount: result.plan.tasks.length },
+          payload: {
+            plan: result.plan,
+            taskCount: result.plan.tasks.length,
+            integrationBranch: this.git?.integrationBranch,
+          },
         });
         return result.plan;
       }
@@ -381,6 +493,24 @@ export class Orchestrator {
     }
 
     throw new Error(`The Boss failed to produce a valid plan: ${lastErrors.join("; ")}`);
+  }
+
+  /** Commit SPEC.md / NOTES.md onto the integration branch before fan-out. */
+  private async commitSpec(runId: string): Promise<void> {
+    if (!this.git || !this.integrationJail) return;
+    const git = this.git;
+    const path = this.integrationJail.root;
+    await this.serialiseGit(() => git.commitAll(path, `spec: plan for ${runId}`)).catch(
+      (error: unknown) => {
+        this.emit({
+          type: "error",
+          payload: {
+            message: `Could not commit SPEC.md: ${(error as Error).message}`,
+            code: "git_commit_failed",
+          },
+        });
+      },
+    );
   }
 
   private persistPlan(
@@ -577,8 +707,23 @@ export class Orchestrator {
       acceptanceCriteria: task.acceptanceCriteria,
     };
 
-    const result = await this.runAgentWithTimeout(agent, brief, runId, task.id);
-    const report: Report = result.report ?? {
+    // Each task works in its own worktree and branch, so two agents can never
+    // overwrite each other's files.
+    const worktree = this.worktrees ? await this.createWorktree(task) : null;
+    let result: AgentRunResult;
+    let committed = false;
+    try {
+      result = await this.runAgentWithTimeout(agent, brief, runId, task.id, undefined, worktree);
+    } finally {
+      if (worktree) {
+        committed = await this.commitTask(task, worktree);
+        if (committed) {
+          this.store.updateTask(task.id, { branch: worktree.branch });
+        }
+      }
+    }
+
+    let report: Report = result.report ?? {
       status: "failed",
       summary: result.text || "The agent produced no report",
       filesChanged: [],
@@ -586,7 +731,51 @@ export class Orchestrator {
       openIssues: ["No submit_report call"],
     };
 
-    const ok = report.status === "done";
+    let ok = report.status === "done";
+
+    // Merge immediately, before dependents are scheduled. A dependent task
+    // branches from the integration branch, so it must see its dependency.
+    if (worktree && committed) {
+      const outcome = await this.serialiseGit(() =>
+        this.git!.mergeIntoIntegration(worktree.branch),
+      );
+      if (outcome.status === "merged") {
+        this.emit({
+          type: "git.merged",
+          payload: { taskId: task.id, branch: worktree.branch, detail: outcome.detail },
+        });
+      } else {
+        ok = false;
+        report = {
+          ...report,
+          status: "blocked",
+          openIssues: [
+            ...report.openIssues,
+            `${outcome.status === "conflict" ? "Merge conflict" : "Merge failed"}: ${outcome.detail}`,
+          ],
+        };
+        this.emit({
+          type: "git.conflict",
+          payload: {
+            taskId: task.id,
+            branch: worktree.branch,
+            status: outcome.status,
+            detail: outcome.detail,
+            conflicts: outcome.conflicts,
+          },
+        });
+      }
+      await this.serialiseGit(() => this.git!.removeWorktree(worktree.path)).catch(
+        () => undefined,
+      );
+    } else if (worktree) {
+      // Nothing committed (no changes) or the run failed: keep the branch if it
+      // has commits, but free the checkout.
+      await this.serialiseGit(() => this.git!.removeWorktree(worktree.path)).catch(
+        () => undefined,
+      );
+    }
+
     this.store.updateTask(task.id, {
       status: ok ? "done" : report.status === "blocked" ? "blocked" : "failed",
       report,
@@ -613,8 +802,11 @@ export class Orchestrator {
     runId: string,
     taskId: string,
     toolChoice?: { name: string } | ((step: number) => { name: string } | undefined),
+    worktree?: Worktree | null,
   ): Promise<AgentRunResult> {
-    const jail = this.jail;
+    const jail = worktree
+      ? await WorkspaceJail.open(worktree.path)
+      : (this.integrationJail ?? this.baseJail);
     if (!jail) throw new Error("Workspace is not initialised");
 
     const controller = new AbortController();
@@ -638,7 +830,7 @@ export class Orchestrator {
         },
         emit: (event) => this.emit(event),
         approve: this.options.approve ?? (async () => this.approvalMode === "auto"),
-        runCommand: (command, args) => this.execCommand(agent.role, command, args),
+        runCommand: (command, args) => this.execCommand(agent.role, command, args, jail.root),
         messageAgent: (from, to, text) => {
           const queue = this.mailbox.get(to) ?? [];
           queue.push(`${from}: ${text}`);
@@ -696,6 +888,7 @@ export class Orchestrator {
     role: Role,
     command: string,
     args: string[],
+    cwd: string,
   ): Promise<CommandOutcome> {
     const printable = [command, ...args].join(" ");
     const decision = checkCommand(command, args, {
@@ -711,16 +904,13 @@ export class Orchestrator {
         timedOut: false,
       };
     }
-    const jail = this.jail;
-    if (!jail) throw new Error("Workspace is not initialised");
-
     const { spawn } = await import("node:child_process");
     const timeoutMs = this.limits.commandTimeoutMs;
     const outer = this.options.signal;
 
     return await new Promise<CommandOutcome>((resolve) => {
       const child = spawn(command, args, {
-        cwd: jail.root,
+        cwd,
         env: scrubbedEnv(),
         shell: false,
         stdio: ["ignore", "pipe", "pipe"],
@@ -792,7 +982,7 @@ export class Orchestrator {
   }
 }
 
-function summarise(goal: string, tasks: TaskRecord[]): string {
+function summarise(goal: string, tasks: TaskRecord[], integrationBranch?: string): string {
   const done = tasks.filter((task) => task.status === "done");
   const failed = tasks.filter((task) => task.status !== "done");
   const lines = [
@@ -802,8 +992,16 @@ function summarise(goal: string, tasks: TaskRecord[]): string {
   ];
   for (const task of tasks) {
     lines.push(`- [${task.status}] ${task.role}: ${task.title}`);
+    if (task.branch) lines.push(`  branch: ${task.branch}`);
     if (task.report?.summary) lines.push(`  ${task.report.summary}`);
     for (const issue of task.report?.openIssues ?? []) lines.push(`  open: ${issue}`);
+  }
+  if (integrationBranch) {
+    lines.push(
+      "",
+      `Review the result with: git diff ${integrationBranch} -- . `,
+      `Merge it yourself with: git merge ${integrationBranch}`,
+    );
   }
   return lines.join("\n");
 }

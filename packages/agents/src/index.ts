@@ -6,6 +6,8 @@ export * from "./providers/probe";
 
 export * from "./config/settings-service";
 
+export * from "./git/workspace";
+
 export * from "./runtime/agent-loop";
 export * from "./runtime/approval";
 export * from "./runtime/budget";

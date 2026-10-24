@@ -12,7 +12,7 @@ import type {
 } from "./types";
 
 type Draft = SettingsView["settings"];
-type Section = "provider" | "models" | "limits" | "safety" | "pricing";
+type Section = "provider" | "models" | "limits" | "safety" | "git" | "pricing";
 
 const emptyPricing: PricingEntry = { input: 0, output: 0, cached_input: 0 };
 
@@ -84,6 +84,7 @@ export function SettingsPanel(): ReactElement {
           models: draft.models,
           limits: draft.limits,
           safety: draft.safety,
+          git: draft.git,
           pricing: draft.pricing,
         }),
       });
@@ -406,6 +407,47 @@ export function SettingsPanel(): ReactElement {
             </select>
           </label>
         </div>
+      </fieldset>
+
+      <fieldset>
+        <legend>Git isolation</legend>
+        <label>
+          <span className="row">
+            <input
+              type="checkbox"
+              checked={draft.git.enabled}
+              disabled={isLocked(locked, "git.enabled")}
+              onChange={(event) => update("git", { enabled: event.target.checked })}
+            />
+            One worktree and branch per task
+          </span>
+        </label>
+        <label>
+          Integration branch
+          <input
+            value={draft.git.integrationBranch}
+            disabled={isLocked(locked, "git.integrationBranch")}
+            onChange={(event) => update("git", { integrationBranch: event.target.value })}
+            placeholder="integration"
+          />
+        </label>
+        <label>
+          Worktrees directory (optional, absolute)
+          <input
+            value={draft.git.worktreesDir ?? ""}
+            disabled={isLocked(locked, "git.worktreesDir")}
+            onChange={(event) =>
+              update("git", {
+                worktreesDir: event.target.value === "" ? undefined : event.target.value,
+              })
+            }
+            placeholder="<repo>.worktrees"
+          />
+        </label>
+        <p className="muted">
+          Each task gets its own branch cut from the integration branch. Results are merged
+          automatically; conflicts are escalated, never guessed. Agents never push.
+        </p>
       </fieldset>
 
       <fieldset>

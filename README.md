@@ -24,9 +24,12 @@ design lives in [`docs/DESIGN.md`](./docs/DESIGN.md).
 - **Scheduler** — topological dependency graph with `MAX_CONCURRENT_AGENTS`.
 - **SQLite persistence** — runs, tasks, agents, messages, events, usage and
   approvals, with WAL and `busy_timeout`.
+- **Git isolation** — one worktree and branch per task (`agent/<role>/<task>`), an
+  `integration` branch cut from HEAD, merges in dependency order, and conflicts
+  escalated instead of guessed. Agents never push; your checkout is untouched.
 - **Runtime settings** — provider, API key, per-tier and per-role models, step
-  caps, output caps, budget, approval mode and pricing are editable from the web
-  UI, the API or the CLI. No restart needed.
+  caps, output caps, context budget, budget, approval mode, git and pricing are
+  editable from the web UI, the API or the CLI. No restart needed.
 - **Web UI (first pass)** — a dispatch/activity/approvals view and a full
   settings panel, built with React + Vite. The pixel-art office is still to come.
 - **Safety primitives** — workspace jail (`realpath` + trailing separator),
@@ -34,13 +37,13 @@ design lives in [`docs/DESIGN.md`](./docs/DESIGN.md).
 - **CLI** — `run`, `runs`, `replay`, `team`, `settings`, `pricing`, `migrate`.
 - **HTTP/WS server** — health, projects, runs, events, approvals, usage,
   settings, models and a WebSocket event stream with `?since=` reconnect.
-- **90 tests** covering the jail, glob matching, command policy, plan
-  validation, budget maths, provider mapping, settings precedence and an
-  end-to-end mock run.
+- **133 tests** covering the jail, glob matching, command policy, plan
+  validation, budget maths, provider mapping, settings precedence, git
+  isolation and merges, cancellation, and an end-to-end mock run.
 
-Not implemented yet: git worktrees and merging, QA review rounds, Docker
-sandbox, prompt caching, context summarisation, resume after a crash, the
-pixel-art office, and a production packaging step.
+Not implemented yet: QA review rounds with fix tasks, Docker sandbox, prompt
+caching, resume after a crash, the pixel-art office, and a production packaging
+step.
 
 ## Quick start
 
@@ -104,6 +107,7 @@ Settings tab, `PATCH /api/settings`, or the CLI — no `.env` editing, no restar
 | Per-agent | model, max steps, **context tokens** and temperature for any role, overriding the tier default |
 | Limits | concurrency, steps per task, **context tokens per agent**, task timeout, tool output cap, max output tokens, budget per goal, budget action |
 | Safety | approval mode, sandbox |
+| Git | worktree isolation on/off, integration branch name, worktrees directory |
 | Pricing | USD per million input/output/cached tokens per model |
 
 **Precedence.** On first boot the environment seeds the database. After that the
@@ -170,6 +174,39 @@ Example patch:
 | `pnpm test` | Run the test suite |
 | `pnpm typecheck` | `tsc --noEmit` |
 | `pnpm dev` | Server and Vite UI together |
+
+## Git isolation (how your repo stays safe)
+
+With `git.enabled` (the default) each task runs in its own worktree and branch:
+
+```text
+<repo>                        your checkout, untouched
+<repo>.worktrees/<taskId>     one checkout per task
+<repo>.worktrees/.integration temporary checkout used for merges
+integration                   branch created from HEAD at the start of the run
+agent/<role>/<taskId>         branch for each task
+```
+
+1. The orchestrator refuses to isolate when your working tree is dirty, and falls
+   back to a shared workspace (with a log line) rather than committing your
+   uncommitted work.
+2. The Boss writes `SPEC.md` and `NOTES.md`; they are committed on `integration`
+   first so every worker sees the contract.
+3. Each task gets `agent/<role>/<taskId>` cut from `integration`.
+4. When a task reports `done`, its work is committed and merged into
+   `integration` **immediately**, so dependent tasks branch from a branch that
+   already contains their dependencies.
+5. A merge conflict aborts the merge, marks the task `blocked`, and emits
+   `git.conflict`. Nothing is guessed.
+6. The temporary worktrees are removed; the branches and `integration` remain.
+
+Agents never push and never touch your branch. Review with
+`git diff integration -- .` and merge with `git merge integration` when you are
+happy.
+
+Set `git.enabled=false` to go back to a shared workspace (useful for a quick
+trial), and change `git.integrationBranch` if `integration` clashes with your
+own branch names.
 
 ## Sessions and context (per agent, never pooled)
 
