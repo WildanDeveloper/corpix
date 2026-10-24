@@ -16,6 +16,7 @@ export function OfficeCanvas({ runId, events, roleNames }: OfficeCanvasProps): R
   const hostRef = useRef<HTMLDivElement>(null);
   const sceneRef = useRef<OfficeScene | null>(null);
   const lastSeq = useRef(0);
+  const previousRunId = useRef<string | null>(null);
   const eventsRef = useRef(events);
   const roleNamesRef = useRef(roleNames);
   eventsRef.current = events;
@@ -35,8 +36,13 @@ export function OfficeCanvas({ runId, events, roleNames }: OfficeCanvasProps): R
         return;
       }
       sceneRef.current = scene;
+      // `?debug=1` exposes the scene for the debug overlay and tests.
+      if (new URLSearchParams(window.location.search).has("debug")) {
+        (window as unknown as { __corpixOffice?: OfficeScene }).__corpixOffice = scene;
+      }
       scene.setRoleNames(roleNamesRef.current);
-      for (const event of eventsRef.current) scene.applyEvent(event);
+      // Replaying history places agents instantly; only live events animate.
+      for (const event of eventsRef.current) scene.applyEvent(event, { instant: true });
       lastSeq.current = eventsRef.current.at(-1)?.seq ?? 0;
     });
 
@@ -62,8 +68,19 @@ export function OfficeCanvas({ runId, events, roleNames }: OfficeCanvasProps): R
   }, [events]);
 
   useEffect(() => {
+    if (previousRunId.current === runId) return;
+    previousRunId.current = runId;
+    const scene = sceneRef.current;
+    if (!scene) return;
+    // A different run means a different office: clear it and replay whatever
+    // history we already have for the new run.
+    scene.reset();
     lastSeq.current = 0;
-    sceneRef.current?.reset();
+    for (const event of eventsRef.current) {
+      if (runId && event.runId !== runId) continue;
+      scene.applyEvent(event, { instant: true });
+      lastSeq.current = event.seq;
+    }
   }, [runId]);
 
   return (

@@ -76,6 +76,8 @@ export interface SceneOptions {
  */
 export class OfficeScene {
   private readonly agents = new Map<string, OfficeAgent>();
+  /** Real agent ids that map onto a canonical body (the Boss has two ids). */
+  private readonly aliases = new Map<string, string>();
   private readonly deskScreens = new Map<string, Graphics>();
   private readonly roleNames = new Map<string, string>();
   private readonly reducedMotion: boolean;
@@ -124,13 +126,20 @@ export class OfficeScene {
   }
 
   /** Every event is applied relative to the run it belongs to. */
-  applyEvent(event: SceneEvent): void {
+  applyEvent(event: SceneEvent, options: { instant?: boolean } = {}): void {
     if (!this.ready || this.destroyed) return;
+    const instant = options.instant ?? false;
     const payload = event.payload as Record<string, unknown>;
     switch (event.type) {
       case "run.started":
         this.reset();
         break;
+      case "plan.created": {
+        // The Boss never gets a task assignment, so give it a body here.
+        const boss = this.ensure("boss", "boss");
+        if (boss) this.sendToDesk(boss, instant);
+        break;
+      }
       case "task.assigned":
       case "task.started": {
         const agent = this.ensure(
@@ -138,7 +147,7 @@ export class OfficeScene {
           String(payload.role ?? "backend"),
         );
         if (!agent) break;
-        this.sendToDesk(agent);
+        this.sendToDesk(agent, instant);
         if (typeof payload.title === "string") this.say(agent, payload.title, 2.2);
         break;
       }
@@ -146,6 +155,7 @@ export class OfficeScene {
         const agent = this.ensure(
           String(payload.agentId ?? ""),
           roleFromAgentId(String(payload.agentId ?? "")),
+          instant,
         );
         if (!agent) break;
         this.setState(agent, payload.to as AgentState, payload.tool as string | undefined);
@@ -183,7 +193,7 @@ export class OfficeScene {
       case "review.started": {
         const qa = [...this.agents.values()].find((entry) => entry.role === "qa");
         if (qa) {
-          this.sendToDesk(qa);
+          this.sendToDesk(qa, instant);
           this.say(qa, "Reviewing the integration branch…", 3);
         }
         break;
@@ -202,9 +212,27 @@ export class OfficeScene {
   reset(): void {
     for (const agent of this.agents.values()) agent.root.destroy({ children: true });
     this.agents.clear();
+    this.aliases.clear();
     for (const screen of this.deskScreens.values()) {
       screen.clear().rect(0, 0, 14, 8).fill(0x1a2630);
     }
+  }
+
+  /** Snapshot for `?debug=1` and for screenshot tests. */
+  debugAgents(): Array<{
+    id: string;
+    role: string;
+    state: AgentState;
+    tile: Point;
+    path: number;
+  }> {
+    return [...this.agents.entries()].map(([id, agent]) => ({
+      id,
+      role: agent.role,
+      state: agent.state,
+      tile: { ...agent.tile },
+      path: agent.path.length,
+    }));
   }
 
   destroy(): void {
@@ -216,10 +244,16 @@ export class OfficeScene {
 
   // --- agents ---------------------------------------------------------------
 
-  private ensure(agentId: string, role: string): OfficeAgent | null {
+  private ensure(agentId: string, role: string, instant = false): OfficeAgent | null {
     if (!agentId) return null;
-    const existing = this.agents.get(agentId);
-    if (existing) return existing;
+    // There can be several Boss agent ids (planning, retries); they all map to
+    // one body so the office never shows two CEOs.
+    const canonical = role === "boss" ? "boss" : (this.aliases.get(agentId) ?? agentId);
+    const existing = this.agents.get(canonical);
+    if (existing) {
+      if (agentId !== canonical) this.aliases.set(agentId, canonical);
+      return existing;
+    }
 
     const name = this.roleNames.get(role) ?? titleCase(role);
     const root = new Container();
@@ -263,8 +297,7 @@ export class OfficeScene {
     const agent: OfficeAgent = {
       id: agentId,
       role,
-      name,
-      root,
+      name,      root,
       sprite,
       label,
       status,
@@ -279,16 +312,16 @@ export class OfficeScene {
       clock: 0,
       idleAfter: 0,
     };
-    this.agents.set(agentId, agent);
+    this.agents.set(canonical, agent);
     this.facingTexture(agent);
-    void this.sendToDesk(agent);
+    this.sendToDesk(agent, instant);
     return agent;
   }
 
-  private sendToDesk(agent: OfficeAgent): void {
+  private sendToDesk(agent: OfficeAgent, instant = false): void {
     const desk = deskFor(agent.role);
     const target = this.reserveStand(agent, desk.stand);
-    this.walkTo(agent, target, desk.facing);
+    this.walkTo(agent, target, desk.facing, instant);
   }
 
   /** Two agents on the same role must not stand on the same tile. */
@@ -315,7 +348,12 @@ export class OfficeScene {
     return nearestWalkable(preferred);
   }
 
-  private walkTo(agent: OfficeAgent, target: Point, facing?: Facing): void {
+  private walkTo(
+    agent: OfficeAgent,
+    target: Point,
+    facing?: Facing,
+    instant = false,
+  ): void {
     const path = simplifyPath(findPath(agent.tile, target));
     if (path.length === 0) {
       agent.tile = target;
@@ -326,7 +364,7 @@ export class OfficeScene {
       }
       return;
     }
-    if (this.reducedMotion) {
+    if (this.reducedMotion || instant) {
       agent.tile = target;
       agent.path = [];
       agent.root.position.set(target.x * TILE + TILE / 2, target.y * TILE + TILE - 2);

@@ -53,6 +53,20 @@ describe("office layout", () => {
   });
 });
 
+describe("desk occupancy", () => {
+  it("gives each role a distinct stand tile", () => {
+    const stands = DESKS.map((desk) => `${desk.stand.x},${desk.stand.y}`);
+    expect(new Set(stands).size).toBe(DESKS.length);
+  });
+
+  it("keeps every stand reachable from the entrance", () => {
+    const start = nearestWalkable(ENTRANCE);
+    for (const desk of DESKS) {
+      expect(findPath(start, desk.stand).length).toBeGreaterThan(0);
+    }
+  });
+});
+
 describe("pathfinding", () => {
   it("routes from the entrance to every desk", () => {
     const start = nearestWalkable(ENTRANCE);

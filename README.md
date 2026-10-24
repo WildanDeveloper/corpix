@@ -59,7 +59,7 @@ place. See [`docs/DESIGN.md`](./docs/DESIGN.md) for the full target design.
   and `dist/cli.mjs`; a non-root Dockerfile and compose file ship alongside.
 - **HTTP/WS server** — health, projects, runs, events, approvals, usage,
   settings, models and a WebSocket event stream with `?since=` reconnect.
-- **186 tests** covering the jail, glob matching, command policy, plan
+- **188 tests** covering the jail, glob matching, command policy, plan
   validation, budget maths, provider mapping, settings precedence, git
   isolation and merges, cancellation, office layout and pathfinding, the
   production bundles, and an end-to-end mock run.
@@ -461,6 +461,15 @@ Implementation notes:
   walking past a desk occludes it, a seated agent tucks behind), and is destroyed
   cleanly on unmount.
 - `prefers-reduced-motion` replaces walking with instant moves.
+
+The office opens on the **most recent run**, so you see the team even when the
+run was started from the CLI or another browser tab: the UI loads the run's
+event history and replays it instantly (agents are placed at their desks rather
+than walking in from the entrance). Live events then animate normally.
+
+`?debug=1` exposes `window.__corpixOffice`, including `debugAgents()` with each
+agent's role, state, tile and remaining path. Useful for screenshots and for
+checking that an animation is driven by a real event.
 
 The layout and pathfinding are covered by unit tests; the scene itself is
 verified with Playwright screenshots.

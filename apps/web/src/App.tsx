@@ -76,7 +76,27 @@ function OfficePanel(): ReactElement {
   };
 
   useEffect(() => {
-    void refresh().catch((err: Error) => setError(err.message));
+    void (async () => {
+      const [projectList, runList] = await Promise.all([
+        api<Project[]>("/api/projects"),
+        api<RunRecord[]>("/api/runs"),
+      ]);
+      setProjects(projectList);
+      setRuns(runList);
+      if (projectList[0] && !projectId) setProjectId(projectList[0].id);
+
+      // Open on the most recent run instead of an empty office, even when that
+      // run was started from the CLI or another browser tab.
+      const latest = runList[0];
+      if (!latest) return;
+      const history = await api<RunEvent[]>(`/api/runs/${latest.id}/events`).catch(
+        () => [] as RunEvent[],
+      );
+      lastSeq.current = history.at(-1)?.seq ?? 0;
+      setEvents(history);
+      setRunId(latest.id);
+      void api<UsageResponse>(`/api/usage?runId=${latest.id}`).then(setUsage).catch(() => undefined);
+    })().catch((err: Error) => setError(err.message));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
