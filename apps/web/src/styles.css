@@ -294,3 +294,50 @@ footer {
   border-top: 1px solid var(--border);
   padding-top: 10px;
 }
+
+.office-canvas-wrap {
+  display: grid;
+  gap: 8px;
+}
+
+.office-canvas {
+  width: 100%;
+  aspect-ratio: 32 / 20;
+  background: #0b0f14;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  position: relative;
+}
+
+.office-canvas canvas {
+  width: 100% !important;
+  height: 100% !important;
+  image-rendering: pixelated;
+}
+
+.office-panel {
+  padding-bottom: 12px;
+}
+
+.office-hint {
+  margin: 0;
+}
+
+.office-canvas-wrap {
+  position: relative;
+}
+
+.office-empty {
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: calc(100% - 26px);
+  display: grid;
+  place-items: center;
+  pointer-events: none;
+  color: #5b6b7a;
+  font-family: ui-monospace, monospace;
+  font-size: 12px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}

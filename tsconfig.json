@@ -1,7 +1,10 @@
 {
   "compilerOptions": {
     "target": "ES2022",
-    "lib": ["ES2022"],
+    "lib": [
+      "ES2022",
+      "DOM"
+    ],
     "module": "ESNext",
     "moduleResolution": "Bundler",
     "strict": true,
@@ -17,11 +20,28 @@
     "sourceMap": true,
     "baseUrl": ".",
     "paths": {
-      "@corpix/shared": ["packages/shared/src/index.ts"],
-      "@corpix/agents": ["packages/agents/src/index.ts"],
-      "@corpix/server/db": ["apps/server/src/db/index.ts"]
+      "@corpix/shared": [
+        "packages/shared/src/index.ts"
+      ],
+      "@corpix/agents": [
+        "packages/agents/src/index.ts"
+      ],
+      "@corpix/server/db": [
+        "apps/server/src/db/index.ts"
+      ]
     },
-    "types": ["node"]
+    "types": [
+      "node"
+    ]
   },
-  "include": ["packages/**/*.ts", "apps/cli/**/*.ts", "apps/server/**/*.ts", "tests/**/*.ts", "vitest.config.ts"]
+  "include": [
+    "packages/**/*.ts",
+    "apps/cli/**/*.ts",
+    "apps/server/**/*.ts",
+    "tests/**/*.ts",
+    "vitest.config.ts"
+  ],
+  "exclude": [
+    "apps/web/**"
+  ]
 }

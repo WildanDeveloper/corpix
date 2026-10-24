@@ -1,13 +1,13 @@
 # Corpix
 
 > Run your own AI software company. You are the boss; a team of agents plans,
-> builds and reports while you watch.
+> builds and reviews while you watch.
 
-**Status: Phase 0 (headless core).** This repository implements the provider
-contract, the agent loop, the mock provider, plan validation, the dependency
-scheduler, SQLite persistence and a headless CLI. The pixel-art office, git
-worktrees, QA review rounds and the merge flow are planned. The full target
-design lives in [`docs/DESIGN.md`](./docs/DESIGN.md).
+![The Corpix office](docs/screenshots/office.png)
+
+**Status: Phase 3 (working team).** The headless core, settings, git isolation,
+QA review loop, crash recovery, prompt caching and a pixel-art office are in
+place. See [`docs/DESIGN.md`](./docs/DESIGN.md) for the full target design.
 
 ## What works today
 
@@ -33,8 +33,13 @@ design lives in [`docs/DESIGN.md`](./docs/DESIGN.md).
 - **Runtime settings** — provider, API key, per-tier and per-role models, step
   caps, output caps, context budget, budget, approval mode, git and pricing are
   editable from the web UI, the API or the CLI. No restart needed.
-- **Web UI (first pass)** — a dispatch/activity/approvals view and a full
-  settings panel, built with React + Vite. The pixel-art office is still to come.
+- **Pixel-art office** — PixiJS 8 scene driven entirely by events: agents walk to
+  their desks with A* pathfinding, type while writing files, glow at a terminal
+  while running commands, raise a "!" when blocked and show a speech bubble when
+  they report. Characters are drawn programmatically (12x16, palette per role),
+  so no third-party art is bundled. Respects `prefers-reduced-motion`.
+- **Web UI** — a dispatch/activity/approvals view, the office and a full settings
+  panel, built with React + Vite.
 - **Prompt caching** — the stable prefix is kept byte-identical and, for gateways
   that only cache leading user messages, the system prompt is folded into the
   first user turn. Cache hits are read from provider usage, priced at the cached
@@ -51,11 +56,11 @@ design lives in [`docs/DESIGN.md`](./docs/DESIGN.md).
 - **CLI** — `run`, `runs`, `replay`, `team`, `settings`, `pricing`, `migrate`.
 - **HTTP/WS server** — health, projects, runs, events, approvals, usage,
   settings, models and a WebSocket event stream with `?since=` reconnect.
-- **165 tests** covering the jail, glob matching, command policy, plan
+- **180 tests** covering the jail, glob matching, command policy, plan
   validation, budget maths, provider mapping, settings precedence, git
   isolation and merges, cancellation, and an end-to-end mock run.
 
-Not implemented yet: the pixel-art office and a production packaging step.
+Not implemented yet: a production packaging step and meetings.
 
 ## Quick start
 
@@ -377,10 +382,42 @@ Note: implicit caching only helps when the prefix is byte-identical. Corpix keep
 the system prompt, tool schemas and task brief fixed and appends tool results, so
 the prefix stays stable. Compaction rewrites only the middle of the conversation.
 
+## The office
+
+The office is a renderer, not a simulation. Every movement is caused by an event
+that already exists in the run log, so what you see is always what happened.
+
+| Event | Office reaction |
+|---|---|
+| `task.assigned` / `task.started` | agent walks from the entrance to its role's desk |
+| `agent.state_changed` | thought bubble (`thinking`), typing (`working`), "!" (`blocked`), ✓ (`done`), ✖ (`error`) |
+| `tool.called` with `write_file` / `edit_file` | typing pose; the desk monitor lights in the role colour |
+| `tool.called` with `run_command` | terminal `>_` indicator |
+| `message.sent` | speech bubble on the sender |
+| `task.completed` / `task.failed` | wave and a summary bubble, or a red flag |
+| `review.started` | the QA agent walks to its desk and announces the review |
+| `run.finished` | everyone returns to idle |
+
+Implementation notes:
+
+- `apps/web/src/office/layout.ts` is pure data: 32x20 tiles, five zones, desks,
+  props, and a `isWalkable` grid.
+- `pathfinding.ts` is A* on a 4-neighbour grid, with path simplification.
+- `sprites.ts` draws each frame into a 12x16 RGBA buffer, palette-swapped per
+  role, so one character generator serves the whole team and nothing is
+  downloaded.
+- `scene.ts` owns the Pixi application, depth-sorts by screen position (an agent
+  walking past a desk occludes it, a seated agent tucks behind), and is destroyed
+  cleanly on unmount.
+- `prefers-reduced-motion` replaces walking with instant moves.
+
+The layout and pathfinding are covered by unit tests; the scene itself is
+verified with Playwright screenshots.
+
 ## Architecture
 
 ```text
-apps/web        React + Vite: dispatch, activity log, approvals, settings
+apps/web        React + Vite: office (PixiJS), dispatch, activity, approvals, settings
 apps/cli        headless runner, settings commands and DB migration
 apps/server     Express + ws + SQLite implementation of the Store contract
 packages/agents providers, runtime (loop, budget, context), tools, orchestrator, roles

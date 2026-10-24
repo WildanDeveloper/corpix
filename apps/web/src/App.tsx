@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState, type ReactElement } from "react";
 import { api, formatUsd, getToken, setToken, wsUrl } from "./api";
 import { SettingsPanel } from "./SettingsPanel";
-import type { ApprovalRow, Project, RunEvent, RunRecord, UsageResponse } from "./types";
+import { OfficeCanvas } from "./office/OfficeCanvas";
+import type { ApprovalRow, Project, RolesView, RunEvent, RunRecord, UsageResponse } from "./types";
 
 type Tab = "office" | "settings";
 
@@ -48,7 +49,20 @@ function OfficePanel(): ReactElement {
   const [runs, setRuns] = useState<RunRecord[]>([]);
   const [error, setError] = useState("");
   const [newProject, setNewProject] = useState({ name: "", repoPath: "" });
+  const [roleNames, setRoleNames] = useState<Record<string, string>>({});
   const lastSeq = useRef(0);
+
+  // Names come from the team, not the event payload, so the office can label
+  // agents the moment they appear.
+  useEffect(() => {
+    void api<RolesView>("/api/roles")
+      .then((roles) => {
+        const names: Record<string, string> = { [roles.boss.role.id]: roles.boss.name };
+        for (const worker of roles.workers) names[worker.role.id] = worker.name;
+        setRoleNames(names);
+      })
+      .catch(() => undefined);
+  }, []);
 
   // Refreshing is used after a run finishes and after registering a project.
   const refresh = async (): Promise<void> => {
@@ -188,6 +202,16 @@ function OfficePanel(): ReactElement {
 
   return (
     <div className="office">
+      <section className="panel office-panel">
+        <header className="panel-header">
+          <h2>Office</h2>
+          <span className="badge">
+            {runId ? `run ${runId}` : "idle"}
+          </span>
+        </header>
+        <OfficeCanvas runId={runId} events={events} roleNames={roleNames} />
+      </section>
+
       <section className="panel">
         <header className="panel-header">
           <h2>Dispatch a goal</h2>
