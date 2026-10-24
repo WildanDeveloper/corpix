@@ -5,6 +5,8 @@ import { z } from "zod";
 import { assertWritable } from "./workspace";
 import type { ToolDefinition } from "./types";
 
+class ToolError extends Error {}
+
 async function guardTarget(ctx: Parameters<ToolDefinition["run"]>[1], rel: string): Promise<string> {
   const abs = await ctx.jail.resolveReal(rel);
   const relative = ctx.jail.relative(abs);
@@ -53,11 +55,11 @@ export const editFileTool: ToolDefinition = {
     };
     const abs = await guardTarget(ctx, rel);
     const text = await fs.readFile(abs, "utf8").catch(() => null);
-    if (text === null) return `ERROR: file not found: ${rel}`;
+    if (text === null) throw new ToolError(`file not found: ${rel}`);
     const first = text.indexOf(oldString);
-    if (first === -1) return `ERROR: oldString was not found in ${rel}`;
+    if (first === -1) throw new ToolError(`oldString was not found in ${rel}`);
     if (text.indexOf(oldString, first + 1) !== -1) {
-      return `ERROR: oldString is not unique in ${rel}; include more context`;
+      throw new ToolError(`oldString is not unique in ${rel}; include more context`);
     }
     await fs.writeFile(abs, text.slice(0, first) + newString + text.slice(first + oldString.length), "utf8");
     ctx.recordChange(ctx.jail.relative(abs));

@@ -3,6 +3,9 @@ import path from "node:path";
 import { truncate } from "@corpix/shared";
 import { z } from "zod";
 import type { ToolDefinition } from "./types";
+import { isSecretPath } from "./workspace";
+
+class ToolError extends Error {}
 
 export const listFilesTool: ToolDefinition = {
   name: "list_files",
@@ -24,6 +27,7 @@ export const listFilesTool: ToolDefinition = {
       for (const entry of entries) {
         if (entry.name === ".git" || entry.name === "node_modules") continue;
         const childRel = ctx.jail.relative(path.join(dir, entry.name));
+        if (isSecretPath(childRel)) continue;
         if (entry.isDirectory()) {
           lines.push(`${childRel}/`);
           if (level < depth) await walk(path.join(dir, entry.name), level + 1);
@@ -33,7 +37,7 @@ export const listFilesTool: ToolDefinition = {
       }
     };
 
-    await walk(root, 1);
+    await walk(root, 0);
     if (lines.length === 0) return `${rel} is empty`;
     return truncate(lines.join("\n"), ctx.limits.toolOutputMaxChars);
   },
@@ -57,9 +61,9 @@ export const readFileTool: ToolDefinition = {
     };
     const abs = await ctx.jail.resolveReal(rel);
     const stat = await fs.stat(abs).catch(() => null);
-    if (!stat) return `ERROR: file not found: ${rel}`;
-    if (stat.isDirectory()) return `ERROR: ${rel} is a directory, use list_files`;
-    if (stat.size > 2_000_000) return `ERROR: ${rel} is larger than 2MB, use startLine/endLine`;
+    if (!stat) throw new ToolError(`file not found: ${rel}`);
+    if (stat.isDirectory()) throw new ToolError(`${rel} is a directory, use list_files`);
+    if (stat.size > 2_000_000) throw new ToolError(`${rel} is larger than 2MB, use startLine/endLine`);
     const text = await fs.readFile(abs, "utf8");
     const sliced = slice(text, startLine, endLine);
     return truncate(sliced, ctx.limits.toolOutputMaxChars);
@@ -97,7 +101,7 @@ export const searchFilesTool: ToolDefinition = {
     try {
       regex = new RegExp(pattern, "i");
     } catch (error) {
-      return `ERROR: invalid regular expression: ${(error as Error).message}`;
+      throw new ToolError(`invalid regular expression: ${(error as Error).message}`);
     }
     const root = await ctx.jail.resolveReal(rel);
     const hits: string[] = [];
@@ -114,6 +118,8 @@ export const searchFilesTool: ToolDefinition = {
           continue;
         }
         if (!entry.isFile()) continue;
+        const relative = ctx.jail.relative(abs);
+        if (isSecretPath(relative)) continue;
         const stat = await fs.stat(abs).catch(() => null);
         if (!stat || stat.size > 400_000) continue;
         const text = await fs.readFile(abs, "utf8").catch(() => "");
@@ -122,7 +128,7 @@ export const searchFilesTool: ToolDefinition = {
         for (let i = 0; i < lines.length; i++) {
           const line = lines[i] as string;
           if (regex.test(line)) {
-            hits.push(`${ctx.jail.relative(abs)}:${i + 1}: ${line.trim().slice(0, 200)}`);
+            hits.push(`${relative}:${i + 1}: ${line.trim().slice(0, 200)}`);
             if (hits.length >= maxResults) return;
           }
         }

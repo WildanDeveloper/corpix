@@ -59,7 +59,6 @@ function looksLikeEscape(args: readonly string[]): boolean {
     return false;
   });
 }
-
 export interface CommandPolicyOptions {
   allow: readonly string[];
   deny?: readonly string[];
@@ -103,6 +102,13 @@ export function checkCommand(
     const recursive = args.some((a) => /^-[a-z]*r/i.test(a) || /^-[a-z]*R/.test(a));
     if (recursive && args.some((a) => a === "/" || a === "~" || a === ".")) {
       return { allowed: false, risk: "exec", reason: "Recursive delete of a broad path is denied" };
+    }
+    if (recursive && looksLikeEscape(args)) {
+      return {
+        allowed: false,
+        risk: "exec",
+        reason: "Recursive delete outside the worktree is denied",
+      };
     }
   }
 

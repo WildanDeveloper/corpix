@@ -10,10 +10,9 @@ export const runCommandTool: ToolDefinition = {
   inputSchema: z.object({
     command: z.string().min(1),
     args: z.array(z.string()).default([]),
-    timeoutMs: z.number().int().min(1_000).max(600_000).optional(),
   }),
   async run(input, ctx) {
-    const { command, args } = input as { command: string; args: string[]; timeoutMs?: number };
+    const { command, args } = input as { command: string; args: string[] };
     const outcome = await ctx.runCommand(command, args);
     ctx.recordCommand(outcome);
     const parts = [
