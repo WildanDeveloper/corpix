@@ -48,6 +48,30 @@ describe("checkCommand", () => {
     expect(checkCommand("rm", ["-rf", "/"], { allow }).allowed).toBe(false);
   });
 
+  it("rejects npx launching an interpreter or eval code", () => {
+    const allow = ["npx", "node"];
+    expect(checkCommand("npx", ["--no-install", "node", "-e", "x"], { allow }).allowed).toBe(false);
+    expect(checkCommand("npx", ["-p", "x", "node"], { allow }).allowed).toBe(false);
+    expect(checkCommand("npx", ["--no-install", "vitest"], { allow }).allowed).toBe(true);
+  });
+
+  it("rejects explicit paths outside the workspace", () => {
+    const decision = checkCommand("node", ["script.js", "/etc/passwd"], {
+      allow: ["node"],
+      workspaceRoot: "/work/project",
+    });
+    expect(decision.allowed).toBe(false);
+    expect(decision.reason).toMatch(/outside the workspace/);
+  });
+
+  it("allows explicit paths inside the workspace", () => {
+    const decision = checkCommand("node", ["/work/project/script.js"], {
+      allow: ["node"],
+      workspaceRoot: "/work/project",
+    });
+    expect(decision.allowed).toBe(true);
+  });
+
   it("honours a per-role deny list", () => {
     const decision = checkCommand("node", ["x"], { allow, deny: ["node"] });
     expect(decision.allowed).toBe(false);

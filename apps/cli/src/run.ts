@@ -71,7 +71,6 @@ export async function runGoal(options: CliOptions, env: Env): Promise<number> {
     budgetUsd: options.budget ?? runtime.settings.limits.budgetUsdPerGoal,
     pricing,
     approve,
-    limits: { reviewRounds: team.team.limits.reviewRounds },
     onEvent: (envelope) => {
       if (options.quiet) return;
       const stamp = envelope.ts.slice(11, 19);

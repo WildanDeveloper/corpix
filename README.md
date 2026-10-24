@@ -24,6 +24,9 @@ design lives in [`docs/DESIGN.md`](./docs/DESIGN.md).
 - **Scheduler** — topological dependency graph with `MAX_CONCURRENT_AGENTS`.
 - **SQLite persistence** — runs, tasks, agents, messages, events, usage and
   approvals, with WAL and `busy_timeout`.
+- **QA review loop** — a reviewer reads the merged diff, runs the tests and either
+  approves or opens fix tasks (bounded by `limits.reviewRounds`). Fix tasks are
+  routed to the role that owns the failing area, then re-reviewed.
 - **Git isolation** — one worktree and branch per task (`agent/<role>/<task>`), an
   `integration` branch cut from HEAD, merges in dependency order, and conflicts
   escalated instead of guessed. Agents never push; your checkout is untouched.
@@ -37,7 +40,7 @@ design lives in [`docs/DESIGN.md`](./docs/DESIGN.md).
 - **CLI** — `run`, `runs`, `replay`, `team`, `settings`, `pricing`, `migrate`.
 - **HTTP/WS server** — health, projects, runs, events, approvals, usage,
   settings, models and a WebSocket event stream with `?since=` reconnect.
-- **134 tests** covering the jail, glob matching, command policy, plan
+- **145 tests** covering the jail, glob matching, command policy, plan
   validation, budget maths, provider mapping, settings precedence, git
   isolation and merges, cancellation, and an end-to-end mock run.
 
@@ -105,7 +108,7 @@ Settings tab, `PATCH /api/settings`, or the CLI — no `.env` editing, no restar
 | API key | stored in `data/secrets.json` (mode 600), **never** in SQLite and never returned to the browser |
 | Models | Boss / worker / cheap model ids |
 | Per-agent | model, max steps, **context tokens** and temperature for any role, overriding the tier default |
-| Limits | concurrency, steps per task, **context tokens per agent**, task timeout, tool output cap, max output tokens, budget per goal, budget action |
+| Limits | concurrency, steps per task, **context tokens per agent**, task timeout, tool output cap, max output tokens, **QA review rounds**, budget per goal, budget action |
 | Safety | approval mode, sandbox |
 | Git | worktree isolation on/off, integration branch name, worktrees directory |
 | Pricing | USD per million input/output/cached tokens per model |
@@ -174,6 +177,34 @@ Example patch:
 | `pnpm test` | Run the test suite |
 | `pnpm typecheck` | `tsc --noEmit` |
 | `pnpm dev` | Server and Vite UI together |
+
+## QA review loop
+
+After the first pass is merged, a reviewer (the `qa` role) checks the result:
+
+1. It receives the goal, the list of changed files on `integration`, and the task
+   reports. It reads `SPEC.md`, `NOTES.md` and the diffs.
+2. It runs the project's tests and type checks through `run_command`, then calls
+   `submit_report` with a verdict:
+   - `done` — acceptable, the run can finish;
+   - `failed` — broken, with every problem listed in `openIssues`;
+   - `blocked` — could not verify (an inconclusive verdict ends the review).
+3. For a `failed` verdict, each issue becomes a **fix task** (max 3 per round)
+   assigned to the role that owns the area, by keyword routing:
+   docs / devops / qa / frontend / backend. The fix task runs in its own worktree
+   and is merged like any other task.
+4. The result is reviewed again, up to `limits.reviewRounds` (default 2, `0`
+   disables review entirely).
+
+The run is only `completed` when every deliverable task is `done` **and** the
+last review approved. If any deliverable failed, the review is skipped: there is
+nothing trustworthy to approve. Review tasks themselves are recorded as tasks so the
+transcript and cost stay auditable, but they are excluded from the completion
+check.
+
+Cost control: review is a normal agent run, so it consumes tokens. Set
+`limits.reviewRounds=0` for cheap exploratory runs, or give the `qa` role a
+cheaper model via `models.roles.qa.model`.
 
 ## Git isolation (how your repo stays safe)
 

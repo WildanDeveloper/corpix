@@ -40,6 +40,8 @@ export const LimitSettingsSchema = z.object({
   taskTimeoutMinutes: z.number().positive().max(1440).default(DEFAULT_LIMITS.taskTimeoutMinutes),
   toolOutputMaxChars: z.number().int().positive().max(200_000).default(DEFAULT_LIMITS.toolOutputMaxChars),
   maxOutputTokens: z.number().int().positive().max(200_000).default(DEFAULT_LIMITS.maxOutputTokens),
+  /** QA review + fix rounds after the first pass, 0 disables review. */
+  reviewRounds: z.number().int().nonnegative().max(10).default(DEFAULT_LIMITS.reviewRounds),
   budgetUsdPerGoal: z.number().nonnegative().default(DEFAULT_LIMITS.budgetUsdPerGoal),
   budgetAction: z.enum(BUDGET_ACTIONS).default("pause"),
 });
@@ -334,6 +336,9 @@ export function resolveSettings(
   });
   setNumber("CONTEXT_TOKENS_PER_AGENT", ["limits", "contextTokens"], 1_000, 2_000_000, (value) => {
     settings.limits.contextTokens = value;
+  });
+  setNumber("REVIEW_ROUNDS", ["limits", "reviewRounds"], 0, 10, (value) => {
+    settings.limits.reviewRounds = value;
   });
   setNumber("TASK_TIMEOUT_MINUTES", ["limits", "taskTimeoutMinutes"], 0.1, 1440, (value) => {
     settings.limits.taskTimeoutMinutes = value;

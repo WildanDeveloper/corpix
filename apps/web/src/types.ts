@@ -31,6 +31,7 @@ export interface LimitSettings {
   taskTimeoutMinutes: number;
   toolOutputMaxChars: number;
   maxOutputTokens: number;
+  reviewRounds: number;
   budgetUsdPerGoal: number;
   budgetAction: "pause" | "stop";
 }

@@ -274,8 +274,7 @@ async function startRun(body: {
     budgetUsd: body.budgetUsd ?? runtime.settings.limits.budgetUsdPerGoal,
     pricing,
     signal: controller.signal,
-    limits: { reviewRounds: team.team.limits.reviewRounds },
-    approve: approvalDecider(approvalMode, async (request) => {
+        approve: approvalDecider(approvalMode, async (request) => {
       return await new Promise<boolean>((resolve) => {
         const approvalId = `ap_${Math.random().toString(36).slice(2, 10)}`;
         pendingApprovals.set(approvalId, { runId, resolve });

@@ -62,7 +62,11 @@ function looksLikeEscape(args: readonly string[]): boolean {
 export interface CommandPolicyOptions {
   allow: readonly string[];
   deny?: readonly string[];
+  /** Absolute paths outside this root are rejected. */
+  workspaceRoot?: string;
 }
+
+const INTERPRETERS = new Set(["node", "sh", "bash", "zsh", "python", "python3", "perl", "ruby"]);
 
 /**
  * Validate an executable/argument pair. No shell is involved, so characters
@@ -113,6 +117,50 @@ export function checkCommand(
   }
 
   const risky = isNetworkCommand(executable, args);
+
+  // `npx node -e ...` (and friends) is arbitrary code execution that sidesteps
+  // the tool layer's workspace jail. Keep the package runners to real binaries.
+  if (executable === "npx") {
+    const evalish = args.some((arg) =>
+      ["-e", "--eval", "-p", "--print", "--package"].includes(arg),
+    );
+    const target = args.find((arg) => !arg.startsWith("-")) ?? "";
+    if (evalish || INTERPRETERS.has(target)) {
+      return {
+        allowed: false,
+        risk: "exec",
+        reason: "npx may not launch an interpreter or evaluate code; run the local binary directly",
+      };
+    }
+  }
+  if ((executable === "npm" || executable === "pnpm" || executable === "yarn") && args[0] === "exec") {
+    if (args.some((arg) => INTERPRETERS.has(arg))) {
+      return {
+        allowed: false,
+        risk: "exec",
+        reason: `${executable} exec may not launch an interpreter; run the local binary directly`,
+      };
+    }
+  }
+
+  // Commands may not reach outside the workspace by absolute path.
+  if (options.workspaceRoot) {
+    const root = options.workspaceRoot.endsWith("/")
+      ? options.workspaceRoot
+      : `${options.workspaceRoot}/`;
+    for (const arg of args) {
+      if (arg === "/dev/null") continue;
+      const candidate = arg.includes("=") && arg.startsWith("-") ? arg.slice(arg.indexOf("=") + 1) : arg;
+      if (!candidate.startsWith("/")) continue;
+      if (candidate === root.slice(0, -1) || candidate.startsWith(root)) continue;
+      return {
+        allowed: false,
+        risk: "exec",
+        reason: `explicit path outside the workspace: ${candidate}`,
+      };
+    }
+  }
+
   return { allowed: true, risk: risky ? "network" : "exec" };
 }
 

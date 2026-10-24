@@ -31,6 +31,14 @@ import { checkCommand, scrubbedEnv } from "../tools/policy";
 import type { CommandOutcome } from "../tools/types";
 import { WorkspaceJail } from "../tools/workspace";
 import type { Store, TaskRecord } from "../store/types";
+import type { TeamMember } from "../roles/loader";
+import {
+  REVIEW_SCHEMA_DESCRIPTION,
+  buildFixInstructions,
+  fixTasksFor,
+  verdictFromReport,
+  type ReviewVerdict,
+} from "./review";
 
 export interface OrchestratorOptions {
   store: Store;
@@ -72,6 +80,10 @@ export interface RunOutcome {
   summary: string;
   spentUsd: number;
   tasks: TaskRecord[];
+  /** QA rounds that ran before the run ended. */
+  reviewRounds: number;
+  /** Final QA verdict when review ran. */
+  reviewed: boolean;
 }
 
 const SHARED_CONTEXT = ["SPEC.md", "NOTES.md"];
@@ -137,7 +149,10 @@ export class Orchestrator {
         options.limits?.maxOutputTokens ??
         settingsLimits?.maxOutputTokens ??
         DEFAULT_LIMITS.maxOutputTokens,
-      reviewRounds: options.limits?.reviewRounds ?? DEFAULT_LIMITS.reviewRounds,
+      reviewRounds:
+        options.limits?.reviewRounds ??
+        settingsLimits?.reviewRounds ??
+        DEFAULT_LIMITS.reviewRounds,
       planAttempts: options.limits?.planAttempts ?? DEFAULT_LIMITS.planAttempts,
     };
     this.pricing = options.pricing ?? options.runtime?.settings.pricing ?? {};
@@ -240,14 +255,26 @@ export class Orchestrator {
       const plan = await this.plan(runId, goal);
       const { tasks, planByTaskId } = this.persistPlan(runId, plan);
       const executed = await this.execute(runId, tasks, planByTaskId);
-      await this.mergeFinished(runId, executed);
-      const finished = executed.map((task) => this.store.getTask(task.id) ?? task);
+      const reviewOutcome = await this.review(
+        runId,
+        goal,
+        executed.map((task) => this.store.getTask(task.id) ?? task),
+      );
+      const finished = reviewOutcome.tasks.map((task) => this.store.getTask(task.id) ?? task);
+      await this.releaseIntegrationWorktree();
       const summary = summarise(goal, finished, this.git?.integrationBranch);
       const paused = this.budget.isPaused || this.budget.isStopped;
       // A blocked task means the goal was not achieved, so the run is not
-      // "completed" just because nothing crashed.
-      const allDone = finished.every((task) => task.status === "done");
-      const status: RunStatus = paused ? "paused" : allDone ? "completed" : "failed";
+      // "completed" just because nothing crashed. Review tasks are a verdict,
+      // not deliverable work, so they are excluded from the completion check.
+      const deliverable = finished.filter((task) => !isReviewTask(task));
+      const allDone = deliverable.every((task) => task.status === "done");
+      const reviewBlocked = reviewOutcome.reviewed && !reviewOutcome.approved;
+      const status: RunStatus = paused
+        ? "paused"
+        : allDone && !reviewBlocked
+          ? "completed"
+          : "failed";
 
       this.store.updateRun(runId, {
         status,
@@ -261,10 +288,15 @@ export class Orchestrator {
           status,
           summary,
           spentUsd: this.budget.spentUsd,
+          review: {
+            ran: reviewOutcome.reviewed,
+            rounds: reviewOutcome.rounds,
+            approved: reviewOutcome.approved,
+          },
           tasks: {
-            total: finished.length,
-            done: finished.filter((task) => task.status === "done").length,
-            failed: finished.filter((task) => task.status !== "done").length,
+            total: deliverable.length,
+            done: deliverable.filter((task) => task.status === "done").length,
+            failed: deliverable.filter((task) => task.status !== "done").length,
           },
         },
       });
@@ -275,8 +307,11 @@ export class Orchestrator {
         summary,
         spentUsd: this.budget.spentUsd,
         tasks: finished,
+        reviewRounds: reviewOutcome.rounds,
+        reviewed: reviewOutcome.reviewed,
       };
     } catch (error) {
+      await this.releaseIntegrationWorktree().catch(() => undefined);
       const cancelled = error instanceof CancelledError;
       const status: RunStatus = cancelled ? "cancelled" : "failed";
       const message = cancelled ? "Run cancelled" : (error as Error).message;
@@ -297,6 +332,8 @@ export class Orchestrator {
           summary: message,
           spentUsd: this.budget.spentUsd,
           tasks: this.store.listTasks(runId),
+          reviewRounds: 0,
+          reviewed: false,
         };
       }
       throw error;
@@ -387,13 +424,10 @@ export class Orchestrator {
     }
   }
 
-  /** Release the integration worktree once the run is over. */
-  private async mergeFinished(runId: string, tasks: TaskRecord[]): Promise<TaskRecord[]> {
-    void runId;
-    if (this.git) {
-      await this.serialiseGit(() => this.git!.releaseIntegrationWorktree()).catch(() => undefined);
-    }
-    return tasks;
+  /** Remove the temporary integration checkout. Safe to call twice. */
+  private async releaseIntegrationWorktree(): Promise<void> {
+    if (!this.git) return;
+    await this.serialiseGit(() => this.git!.releaseIntegrationWorktree()).catch(() => undefined);
   }
 
   /** git operations mutate shared refs, so run them one at a time. */
@@ -401,6 +435,388 @@ export class Orchestrator {
     const next = this.gitQueue.then(operation, operation);
     this.gitQueue = next.catch(() => undefined);
     return next;
+  }
+
+  /**
+   * QA gate: review the merged integration branch, then open fix tasks for the
+   * issues found. Runs at most `limits.reviewRounds` rounds, and never reviews
+   * when the reviewer role is not on the team.
+   */
+  private async review(
+    runId: string,
+    goal: string,
+    tasks: TaskRecord[],
+  ): Promise<{
+    tasks: TaskRecord[];
+    rounds: number;
+    reviewed: boolean;
+    approved: boolean;
+  }> {
+    const reviewer = this.team.workers.find((worker) => worker.role.id === "qa");
+    const maxRounds = this.limits.reviewRounds;
+    const deliverable = tasks.filter((task) => !isReviewTask(task));
+    const done = deliverable.filter((task) => task.status === "done");
+    if (!reviewer || maxRounds === 0 || done.length === 0) {
+      return { tasks, rounds: 0, reviewed: false, approved: false };
+    }
+    // Reviewing an incomplete result wastes tokens and can approve work that is
+    // missing a deliverable, so the gate requires every deliverable to be done.
+    if (done.length !== deliverable.length) {
+      this.log("Skipping review: at least one deliverable task did not finish.");
+      return { tasks, rounds: 0, reviewed: false, approved: false };
+    }
+
+    let current = tasks;
+    let round = 0;
+    let lastVerdict: ReviewVerdict | null = null;
+
+    while (round < maxRounds) {
+      round += 1;
+      this.emit({
+        type: "review.started",
+        payload: {
+          round,
+          maxRounds,
+          reviewer: reviewer.role.id,
+          integrationBranch: this.git?.integrationBranch,
+        },
+      });
+
+      const { verdict, task } = await this.runReviewRound(
+        runId,
+        goal,
+        reviewer,
+        round,
+        maxRounds,
+        current,
+      );
+      lastVerdict = verdict;
+      current = [...current, task];
+      this.emit({
+        type: "review.finished",
+        payload: {
+          round,
+          taskId: task.id,
+          approved: verdict.approved,
+          inconclusive: verdict.inconclusive,
+          issues: verdict.issues,
+          summary: verdict.summary,
+        },
+      });
+
+      if (verdict.approved || verdict.inconclusive) {
+        return {
+          tasks: current,
+          rounds: round,
+          reviewed: true,
+          approved: verdict.approved,
+        };
+      }
+
+      const fixes = fixTasksFor(verdict.issues);
+      if (fixes.length === 0) {
+        return { tasks: current, rounds: round, reviewed: true, approved: false };
+      }
+
+      const fixTasks = this.persistFixTasks(runId, task, round, fixes, verdict);
+      const planByTaskId = new Map<string, Plan["tasks"][number]>();
+      for (const fix of fixTasks) {
+        planByTaskId.set(fix.id, {
+          id: fix.id,
+          role: fix.role,
+          title: fix.title,
+          instructions: fix.instructions,
+          dependsOn: [],
+          acceptanceCriteria: fix.acceptanceCriteria,
+        });
+      }
+      const executed = await this.execute(runId, fixTasks, planByTaskId);
+      current = [
+        ...current.map((item) => this.store.getTask(item.id) ?? item),
+        ...executed.map((item) => this.store.getTask(item.id) ?? item),
+      ];
+    }
+
+    return {
+      tasks: current,
+      rounds: round,
+      reviewed: true,
+      approved: lastVerdict?.approved ?? false,
+    };
+  }
+
+  private async runReviewRound(
+    runId: string,
+    goal: string,
+    reviewer: TeamMember,
+    round: number,
+    maxRounds: number,
+    tasks: TaskRecord[],
+  ): Promise<{ verdict: ReviewVerdict; task: TaskRecord }> {    const agentId = newAgentId(reviewer.role.id);
+    const model = reviewer.role.model;
+    this.store.createAgent({
+      id: agentId,
+      runId,
+      role: reviewer.role.id,
+      name: reviewer.name,
+      model,
+      state: "idle",
+    });
+
+    const agent: AgentRuntime = {
+      id: agentId,
+      name: reviewer.name,
+      model,
+      role: reviewer.role,
+      systemPrompt: this.renderFor(reviewer.role, reviewer.name),
+    };
+
+    const files = this.git
+      ? await this.serialiseGit(() => this.git!.changedSinceBase()).catch(() => [] as string[])
+      : [];
+    const stat = this.git
+      ? await this.serialiseGit(() => this.git!.diffStat()).catch(() => "")
+      : "";
+
+    const instructions = [
+      `Goal from the user: ${goal}`,
+      "",
+      `You are already inside a checkout of the integration branch${this.git ? ` "${this.git.integrationBranch}"` : ""}.`,
+      "The files below are the ones this run changed; read them directly.",
+      "",
+      files.length > 0
+        ? `Changed files:\n${files.map((file) => `- ${file}`).join("\n")}`
+        : "No changed-file list is available; inspect the workspace yourself.",
+      stat.length > 0 ? `\nDiff stat:\n${stat}` : "",
+      "",
+      "Tasks reported by the team:",
+      ...tasks
+        .filter((task) => task.status === "done")
+        .map((task) => `- ${task.role}: ${task.title}`),
+      "",
+      "How to review, efficiently (you have a limited number of steps):",
+      "1. Read SPEC.md and only the changed files listed above. Do not scan the whole repo.",
+      "2. Run the project's test command once, then the type check if the project has one.",
+      "3. Check each acceptance criterion against what you read.",
+      "4. Call submit_report. Do not fix product code: your write scope is tests only.",
+      "",
+      REVIEW_SCHEMA_DESCRIPTION,
+    ]
+      .filter((line) => line !== "")
+      .join("\n");
+
+    const taskId = newTaskId();
+    const record: TaskRecord = {
+      id: taskId,
+      runId,
+      parentId: null,
+      role: reviewer.role.id,
+      title: `Review round ${round} of ${maxRounds}`,
+      instructions,
+      status: "review",
+      dependsOn: [],
+      acceptanceCriteria: ["A verdict with concrete issues when the work is not acceptable"],
+      branch: null,
+      report: null,
+      startedAt: new Date().toISOString(),
+      finishedAt: null,
+    };
+    this.store.createTask(record);
+    this.emit({
+      type: "task.created",
+      payload: {
+        taskId,
+        role: record.role,
+        title: record.title,
+        reviewRound: round,
+      },
+    });
+    this.emit({
+      type: "task.started",
+      payload: { taskId, role: record.role, title: record.title, agentId },
+    });
+
+    // The reviewer gets a worktree cut from the integration branch, exactly like
+    // a task, so it sees the merged result and cannot touch the user's checkout.
+    const worktree = this.worktrees ? await this.createWorktree(record) : null;
+
+    let result: AgentRunResult;
+    try {
+      result = await this.runAgentWithTimeout(
+        agent,
+        {
+          id: taskId,
+          title: record.title,
+          instructions,
+          acceptanceCriteria: record.acceptanceCriteria,
+        },
+        runId,
+        taskId,
+        undefined,
+        worktree,
+        // Reviews read a lot and run tests, so give them a floor of 30 steps
+        // even when the global per-task cap is lower.
+        Math.max(this.limits.maxStepsPerTask, 30),
+      );
+    } catch (error) {
+      // A reviewer that crashes or times out is inconclusive, not a failed run.
+      const message = (error as Error).message;
+      const report: Report = {
+        status: "blocked",
+        summary: `Reviewer failed: ${message}`,
+        filesChanged: [],
+        commandsRun: [],
+        openIssues: [`Reviewer error: ${message}`],
+      };
+      this.store.updateTask(taskId, {
+        status: "blocked",
+        report,
+        finishedAt: new Date().toISOString(),
+      });
+      this.store.updateAgent(agentId, { state: "error" });
+      this.emit({
+        type: "task.failed",
+        payload: {
+          taskId,
+          role: record.role,
+          title: record.title,
+          agentId,
+          status: "blocked",
+          summary: report.summary,
+        },
+      });
+      this.emit({
+        type: "error",
+        payload: { message, code: "review_error", taskId, agentId },
+      });
+      if (worktree) {
+        await this.serialiseGit(() => this.git!.removeWorktree(worktree.path)).catch(
+          () => undefined,
+        );
+      }
+      return {
+        verdict: {
+          approved: false,
+          issues: [message],
+          summary: report.summary,
+          inconclusive: true,
+        },
+        task: this.store.getTask(taskId) ?? { ...record, status: "blocked", report },
+      };
+    }
+
+    const report: Report = result.report ?? {
+      status: "blocked",
+      summary: result.text || "The reviewer produced no report",
+      filesChanged: [],
+      commandsRun: [],
+      openIssues: ["Reviewer did not call submit_report"],
+    };
+    const verdict = verdictFromReport(report);
+    const status = verdict.approved ? "done" : "blocked";
+
+    // A reviewer only writes tests, so its work is kept on its branch and never
+    // merged: review findings are reported through the verdict, not the diff.
+    if (worktree) {
+      await this.serialiseGit(() => this.git!.removeWorktree(worktree.path)).catch(
+        () => undefined,
+      );
+    }
+
+    this.store.updateTask(taskId, {
+      status,
+      report,
+      finishedAt: new Date().toISOString(),
+    });
+    this.store.updateAgent(agentId, { state: verdict.approved ? "done" : "error" });
+    this.emit({
+      type: verdict.approved ? "task.completed" : "task.failed",
+      payload: {
+        taskId,
+        role: record.role,
+        title: record.title,
+        agentId,
+        status: report.status,
+        summary: report.summary,
+      },
+    });
+
+    return { verdict, task: this.store.getTask(taskId) ?? { ...record, status, report } };
+  }
+
+  /** Turn review issues into tasks that run on the integration branch. */
+  private persistFixTasks(
+    runId: string,
+    reviewTask: TaskRecord,
+    round: number,
+    issues: readonly string[],
+    verdict: ReviewVerdict,
+  ): TaskRecord[] {
+    const reviewerRole = reviewTask.role;
+    const candidates = this.team.workers.filter((worker) => worker.role.id !== reviewerRole);
+    const fallback =
+      candidates.find((worker) => worker.role.id === "backend") ?? candidates[0];
+
+    const created: TaskRecord[] = [];
+    for (const issue of issues) {
+      const role = this.guessRoleForIssue(issue, candidates) ?? fallback;
+      if (!role) continue;
+      const id = newTaskId();
+      const record: TaskRecord = {
+        id,
+        runId,
+        parentId: reviewTask.id,
+        role: role.role.id,
+        title: `Fix round ${round}: ${issue.slice(0, 60)}`,
+        instructions: buildFixInstructions({
+          round,
+          originalTitle: reviewTask.title,
+          originalRole: role.role.id,
+          issues: [issue],
+          reviewSummary: verdict.summary,
+        }),
+        status: "pending",
+        dependsOn: [],
+        acceptanceCriteria: [`The issue is fixed: ${issue.slice(0, 120)}`],
+        branch: null,
+        report: null,
+        startedAt: null,
+        finishedAt: null,
+      };
+      this.store.createTask(record);
+      this.emit({
+        type: "task.created",
+        payload: {
+          taskId: id,
+          role: record.role,
+          title: record.title,
+          fixRound: round,
+        },
+      });
+      created.push(record);
+    }
+    return created;
+  }
+
+  /** Cheap keyword routing so a docs problem goes to docs, not backend. */
+  private guessRoleForIssue(
+    issue: string,
+    candidates: readonly TeamMember[],
+  ): TeamMember | undefined {
+    const text = issue.toLowerCase();
+    const rules: Array<[RegExp, string]> = [
+      [/readme|docs?\/|documentation|changelog/, "docs"],
+      [/docker|ci\b|workflow|github actions|deploy|infra/, "devops"],
+      [/test|spec\b|coverage|assert/, "qa"],
+      [/css|style|component|react|ui\b|page|frontend/, "frontend"],
+      [/api\b|route|database|auth|server|endpoint|backend/, "backend"],
+    ];
+    for (const [pattern, roleId] of rules) {
+      if (!pattern.test(text)) continue;
+      const match = candidates.find((worker) => worker.role.id === roleId);
+      if (match) return match;
+    }
+    return undefined;
   }
 
   private async plan(runId: string, goal: string): Promise<Plan> {
@@ -803,6 +1219,7 @@ export class Orchestrator {
     taskId: string,
     toolChoice?: { name: string } | ((step: number) => { name: string } | undefined),
     worktree?: Worktree | null,
+    maxStepsOverride?: number,
   ): Promise<AgentRunResult> {
     const jail = worktree
       ? await WorkspaceJail.open(worktree.path)
@@ -823,7 +1240,7 @@ export class Orchestrator {
         budget: this.budget,
         jail,
         limits: {
-          maxSteps: agent.role.maxSteps,
+          maxSteps: maxStepsOverride ?? agent.role.maxSteps,
           toolOutputMaxChars: this.limits.toolOutputMaxChars,
           commandTimeoutMs: this.limits.commandTimeoutMs,
           maxOutputTokens: this.limits.maxOutputTokens,
@@ -894,6 +1311,7 @@ export class Orchestrator {
     const decision = checkCommand(command, args, {
       allow: role.commands.allow,
       deny: role.commands.deny,
+      workspaceRoot: cwd,
     });
     if (!decision.allowed) {
       return {
@@ -980,6 +1398,10 @@ export class Orchestrator {
       return null;
     }
   }
+}
+
+function isReviewTask(task: TaskRecord): boolean {
+  return task.role === "qa" && task.title.startsWith("Review round ");
 }
 
 function summarise(goal: string, tasks: TaskRecord[], integrationBranch?: string): string {

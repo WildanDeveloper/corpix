@@ -179,6 +179,7 @@ export function SettingsPanel(): ReactElement {
     ["taskTimeoutMinutes", "Task timeout (minutes)", "wall clock"],
     ["toolOutputMaxChars", "Tool output cap (chars)", "truncation"],
     ["maxOutputTokens", "Max output tokens", "per model call"],
+    ["reviewRounds", "QA review rounds", "0 disables review"],
     ["budgetUsdPerGoal", "Budget per goal (USD)", "0 = unlimited"],
   ];
 

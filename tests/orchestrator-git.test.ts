@@ -84,8 +84,10 @@ describe("orchestrator with git isolation", () => {
     expect(types).toContain("git.worktree_created");
     expect(types).toContain("git.merged");
 
-    // Every done task has its own branch.
-    const done = outcome.tasks.filter((task) => task.status === "done");
+    // Every done deliverable task has its own branch; review tasks do not.
+    const done = outcome.tasks.filter(
+      (task) => task.status === "done" && !task.title.startsWith("Review round "),
+    );
     expect(done.length).toBeGreaterThan(1);
     for (const task of done) {
       expect(task.branch).toMatch(/^agent\//);

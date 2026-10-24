@@ -38,6 +38,7 @@ export class GitWorkspace {
     readonly repoPath: string,
     readonly worktreesRoot: string,
     readonly integrationBranch: string,
+    readonly baseBranch: string,
   ) {}
 
   static async open(
@@ -59,7 +60,15 @@ export class GitWorkspace {
           `checkout inside the repo would create a recursive worktree.`,
       );
     }
-    return new GitWorkspace(absolute, worktreesRoot, options.integrationBranch ?? "integration");
+    const baseBranch = (
+      await git(absolute, ["rev-parse", "--abbrev-ref", "HEAD"])
+    ).stdout.trim();
+    return new GitWorkspace(
+      absolute,
+      worktreesRoot,
+      options.integrationBranch ?? "integration",
+      baseBranch,
+    );
   }
 
   /** Current branch, or a detached HEAD description. */
@@ -169,6 +178,29 @@ export class GitWorkspace {
       .split("\n")
       .map((line) => line.trim())
       .filter((line) => line.length > 0);
+  }
+
+  /** Files the run changed, relative to the branch the user started from. */
+  async changedSinceBase(): Promise<string[]> {
+    const result = await this.git([
+      "diff",
+      "--name-only",
+      `${this.baseBranch}...${this.integrationBranch}`,
+    ]);
+    return result.stdout
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0);
+  }
+
+  /** Compact diff stat for the reviewer, bounded so it cannot blow the prompt. */
+  async diffStat(maxChars = 4000): Promise<string> {
+    const result = await this.git([
+      "diff",
+      "--stat",
+      `${this.baseBranch}...${this.integrationBranch}`,
+    ]);
+    return result.stdout.slice(0, maxChars);
   }
 
   /**
