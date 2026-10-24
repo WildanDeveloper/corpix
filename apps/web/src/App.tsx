@@ -33,7 +33,7 @@ export function App(): ReactElement {
           />
         </label>
       </nav>
-      <main>{tab === "settings" ? <SettingsPanel /> : <OfficePanel />}</main>
+      <main>{tab === "settings" ? <SettingsPanel key={token} /> : <OfficePanel key={token} />}</main>
     </div>
   );
 }

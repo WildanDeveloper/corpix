@@ -19,6 +19,11 @@ RUN pnpm build
 # Runtime: production dependencies, bundles, config and the built web app.
 FROM node:22-bookworm-slim AS runtime
 
+# git is required for worktree isolation; ca-certificates for HTTPS model APIs.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends git ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
 RUN corepack enable
 WORKDIR /app
 
@@ -39,7 +44,9 @@ RUN pnpm install --prod --frozen-lockfile
 COPY --from=build /app/dist ./dist
 COPY --from=build /app/apps/web/dist ./apps/web/dist
 COPY config ./config
+COPY docker-entrypoint.sh /usr/local/bin/corpix-entrypoint.sh
 COPY README.md LICENSE CREDITS.md ./
+RUN chmod +x /usr/local/bin/corpix-entrypoint.sh
 
 RUN mkdir -p /data /workspaces && groupadd -g 10001 corpix && useradd -u 10001 -g corpix -m corpix \
     && chown -R corpix:corpix /data /workspaces /app
@@ -51,4 +58,5 @@ VOLUME ["/data", "/workspaces"]
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
   CMD node -e "fetch('http://127.0.0.1:'+(process.env.PORT||3001)+'/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 
+ENTRYPOINT ["/usr/local/bin/corpix-entrypoint.sh"]
 CMD ["node", "dist/server.mjs"]

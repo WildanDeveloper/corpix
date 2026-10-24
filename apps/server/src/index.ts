@@ -107,6 +107,9 @@ function bearerOf(header: string | undefined): string {
 }
 
 app.use((req, res, next) => {
+  // The static UI must load before the user can paste the token, and the
+  // container healthcheck cannot send one. Everything under /api needs auth.
+  if (!req.path.startsWith("/api") || req.path === "/api/health") return next();
   if (tokenMatches(bearerOf(req.headers.authorization))) return next();
   res.status(401).json({ error: "unauthorized" });
 });

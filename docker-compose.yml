@@ -14,13 +14,22 @@ services:
       CHEAP_MODEL: ${CHEAP_MODEL:-cheap-model}
       # Inside a container bwrap needs extra privileges; none is the safe default.
       SANDBOX: ${SANDBOX:-none}
+      # Leave empty to generate one in ./data/admin-token on first start.
       ADMIN_TOKEN: ${ADMIN_TOKEN:-}
+    # Named volumes inherit the image's ownership, so the non-root user can
+    # write to them without any host-side chown. To use a bind mount instead,
+    # run `sudo chown -R 10001:10001 ./data ./workspaces` first and swap these
+    # for `- ./data:/data` and `- ./workspaces:/workspaces`.
     volumes:
-      - ./data:/data
-      - ./workspaces:/workspaces
+      - corpix-data:/data
+      - corpix-workspaces:/workspaces
     restart: unless-stopped
     # Uncomment only if you understand the trade-off: this lets the container
     # create user namespaces so SANDBOX=bwrap works, at the cost of isolation
     # from the host kernel.
     # security_opt: ["seccomp=unconfined"]
     # cap_add: ["SYS_ADMIN"]
+
+volumes:
+  corpix-data:
+  corpix-workspaces:

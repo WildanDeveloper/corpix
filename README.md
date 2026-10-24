@@ -59,7 +59,7 @@ place. See [`docs/DESIGN.md`](./docs/DESIGN.md) for the full target design.
   and `dist/cli.mjs`; a non-root Dockerfile and compose file ship alongside.
 - **HTTP/WS server** — health, projects, runs, events, approvals, usage,
   settings, models and a WebSocket event stream with `?since=` reconnect.
-- **183 tests** covering the jail, glob matching, command policy, plan
+- **186 tests** covering the jail, glob matching, command policy, plan
   validation, budget maths, provider mapping, settings precedence, git
   isolation and merges, cancellation, office layout and pathfinding, the
   production bundles, and an end-to-end mock run.
@@ -119,10 +119,32 @@ docker compose up -d --build
 # http://127.0.0.1:3001
 ```
 
-The image runs as a non-root user (`uid 10001`), keeps `/data` (SQLite, secrets)
-and `/workspaces` as volumes, and ships a healthcheck. `SANDBOX=bwrap` needs
-extra privileges inside a container; the compose file defaults to `none` and
-documents the flags if you want to enable it.
+The image runs as a non-root user (`uid 10001`), includes `git` (needed for
+worktree isolation), keeps `/data` (SQLite, secrets, admin token) and
+`/workspaces` as volumes, and ships a healthcheck.
+
+**Admin token.** Corpix refuses to bind `0.0.0.0` without `ADMIN_TOKEN`, and a
+container has to bind `0.0.0.0` to be reachable. The entrypoint therefore
+generates a random token on first start and stores it in `/data/admin-token`:
+
+```bash
+docker compose exec corpix cat /data/admin-token
+```
+
+Paste it into the **Admin token** field in the UI. The static UI and
+`/api/health` stay public so the page can load and the healthcheck can run;
+every other API route requires the token.
+
+**Volumes.** Compose uses named volumes because they inherit the image's
+ownership. If you prefer a bind mount, chown it first:
+
+```bash
+sudo chown -R 10001:10001 ./data ./workspaces
+```
+
+**Sandbox.** `SANDBOX=bwrap` needs extra privileges inside a container; the
+compose file defaults to `none` and documents the flags if you want to enable
+it. Note the container has no `bwrap` binary unless you add it to the image.
 
 
 
