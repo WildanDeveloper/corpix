@@ -210,6 +210,7 @@ app.get("/api/roles", (_req, res) => {
       applyRoleOverrides(
         await loadTeam(configDir, "team.default.yaml", envForRoles(env)),
         runtime.settings.models,
+        runtime.settings.team.names,
       ),
       runtime.settings.limits.maxStepsPerTask,
     );

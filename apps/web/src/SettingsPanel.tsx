@@ -13,7 +13,7 @@ import type {
 } from "./types";
 
 type Draft = SettingsView["settings"];
-type Section = "provider" | "models" | "limits" | "safety" | "git" | "pricing";
+type Section = "provider" | "models" | "limits" | "safety" | "team" | "git" | "pricing";
 
 const emptyPricing: PricingEntry = { input: 0, output: 0, cached_input: 0 };
 
@@ -81,6 +81,11 @@ export function SettingsPanel(): ReactElement {
     setBusy(true);
     setStatus({ kind: "idle", text: "" });
     try {
+      const names = Object.fromEntries(
+        Object.entries(draft.team.names)
+          .map(([role, name]) => [role, name.trim()] as const)
+          .filter(([, name]) => name.length > 0),
+      );
       const next = await api<SettingsView>("/api/settings", {
         method: "PATCH",
         body: JSON.stringify({
@@ -88,6 +93,7 @@ export function SettingsPanel(): ReactElement {
           models: draft.models,
           limits: draft.limits,
           safety: draft.safety,
+          team: { company: draft.team.company, names },
           git: draft.git,
           pricing: draft.pricing,
         }),
@@ -351,6 +357,23 @@ export function SettingsPanel(): ReactElement {
       </fieldset>
 
       <fieldset>
+        <legend>Team</legend>
+        <label>
+          Company name
+          <input
+            value={draft.team.company}
+            maxLength={40}
+            onChange={(event) => update("team", { company: event.target.value })}
+          />
+        </label>
+        <p className="muted">
+          Agent names are editable per role in the table below and apply to the office,
+          prompts and the event log. Clear a field to fall back to the name in
+          <code>config/team.default.yaml</code>.
+        </p>
+      </fieldset>
+
+      <fieldset>
         <legend>Per-agent overrides</legend>
         <p className="muted">
           Leave a field empty to inherit the tier model and the role's YAML defaults.
@@ -359,6 +382,7 @@ export function SettingsPanel(): ReactElement {
           <thead>
             <tr>
               <th>Agent</th>
+              <th>Name</th>
               <th>Model</th>
               <th>Max steps</th>
               <th>Context tokens</th>
@@ -374,9 +398,16 @@ export function SettingsPanel(): ReactElement {
                   roleId={roles.boss.role.id}
                   effective={roles.boss.role}
                   override={draft.models.roles[roles.boss.role.id] ?? {}}
+                  nameOverride={draft.team.names[roles.boss.role.id] ?? ""}
                   models={knownModels}
                   defaultContextTokens={draft.limits.contextTokens}
                   onChange={updateRole}
+                  onName={(roleId, value) =>
+                    setDraft((current) => current ? {
+                      ...current,
+                      team: { ...current.team, names: { ...current.team.names, [roleId]: value } },
+                    } : current)
+                  }
                 />
                 {roles.workers.map((worker) => (
                   <RoleRow
@@ -385,9 +416,16 @@ export function SettingsPanel(): ReactElement {
                     roleId={worker.role.id}
                     effective={worker.role}
                     override={draft.models.roles[worker.role.id] ?? {}}
+                    nameOverride={draft.team.names[worker.role.id] ?? ""}
                     models={knownModels}
                     defaultContextTokens={draft.limits.contextTokens}
                     onChange={updateRole}
+                    onName={(roleId, value) =>
+                      setDraft((current) => current ? {
+                        ...current,
+                        team: { ...current.team, names: { ...current.team.names, [roleId]: value } },
+                      } : current)
+                    }
                   />
                 ))}
               </>
@@ -609,9 +647,11 @@ interface RoleRowProps {
   roleId: string;
   effective: { model: string; maxSteps: number; contextTokens?: number; temperature?: number };
   override: RoleOverride;
+  nameOverride: string;
   models: string[];
   defaultContextTokens: number;
   onChange: (roleId: string, patch: RoleOverride) => void;
+  onName: (roleId: string, value: string) => void;
 }
 
 function RoleRow({
@@ -619,14 +659,24 @@ function RoleRow({
   roleId,
   effective,
   override,
+  nameOverride,
   models,
   defaultContextTokens,
   onChange,
+  onName,
 }: RoleRowProps): ReactElement {
   return (
     <tr>
       <td>
-        {name} <span className="muted">({roleId})</span>
+        <span className="muted">{roleId}</span>
+      </td>
+      <td>
+        <input
+          value={nameOverride}
+          placeholder={name}
+          maxLength={40}
+          onChange={(event) => onName(roleId, event.target.value)}
+        />
       </td>
       <td>
         <input

@@ -76,6 +76,15 @@ describe("settings defaults and merging", () => {
     expect(next.updatedAt).toBeTruthy();
   });
 
+  it("merges team names per role without dropping siblings", () => {
+    const base = mergeSettings(defaultSettings(), {
+      team: { company: "Acme", names: { qa: "Sinta" } },
+    });
+    const next = mergeSettings(base, { team: { names: { backend: "Rizky" } } });
+    expect(next.team.company).toBe("Acme");
+    expect(next.team.names).toEqual({ qa: "Sinta", backend: "Rizky" });
+  });
+
   it("merges role overrides per field", () => {
     const base = mergeSettings(defaultSettings(), {
       models: { roles: { backend: { temperature: 0.2 } } },
@@ -229,6 +238,28 @@ describe("per-role model overrides", () => {
     expect(backend?.contextTokens).toBe(1_000_000);
     expect(backend?.temperature).toBe(0.4);
     expect(applied.roles.get("backend")?.model).toBe("backend-x");
+  });
+
+  it("renames agents from team settings", () => {
+    const applied = applyRoleOverrides(
+      team,
+      { boss: "b", worker: "w", cheap: "c", roles: {} },
+      { boss: "Rina", backend: "Rizky", qa: "Sinta" },
+    );
+    expect(applied.boss.name).toBe("Rina");
+    expect(applied.workers.find((worker) => worker.role.id === "backend")?.name).toBe("Rizky");
+    expect(applied.workers.find((worker) => worker.role.id === "qa")?.name).toBe("Sinta");
+    // Unnamed roles keep the YAML name.
+    expect(applied.workers.find((worker) => worker.role.id === "frontend")?.name).toBe("Fiona");
+  });
+
+  it("ignores blank names and falls back to the YAML team file", () => {
+    const applied = applyRoleOverrides(
+      team,
+      { boss: "b", worker: "w", cheap: "c", roles: {} },
+      { backend: "   " },
+    );
+    expect(applied.workers.find((worker) => worker.role.id === "backend")?.name).toBe("Bruno");
   });
 
   it("keeps each role's context budget independent", () => {

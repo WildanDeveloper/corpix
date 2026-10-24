@@ -46,6 +46,7 @@ export async function runGoal(options: CliOptions, env: Env): Promise<number> {
   const team = applyRoleOverrides(
     await loadTeam(configDir, options.team ?? "team.default.yaml", envForRoles(env)),
     runtime.settings.models,
+    runtime.settings.team.names,
   );
   const pricing = { ...(await loadPricing(configDir)), ...runtime.settings.pricing };
   const provider = createProviderFromSettings(runtime);

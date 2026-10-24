@@ -188,6 +188,7 @@ async function showTeam(configDir: string, env: ReturnType<typeof parseEnv>): Pr
     applyRoleOverrides(
       await loadTeam(configDir, "team.default.yaml", envForRoles(env)),
       runtime.settings.models,
+      runtime.settings.team.names,
     ),
     runtime.settings.limits.maxStepsPerTask,
   );
@@ -268,6 +269,13 @@ async function settingsCommand(args: string[], env: ReturnType<typeof parseEnv>)
           continue;
         }
         const value = coerce(raw);
+        if (section === "team" && key === "names" && rest.length === 1) {
+          const [roleId] = rest as [string];
+          const names = (patch.team?.names as Record<string, string>) ?? {};
+          names[roleId] = String(value);
+          patch.team = { ...(patch.team ?? {}), names };
+          continue;
+        }
         if (section === "models" && key === "roles" && rest.length === 2) {
           const [roleId, field] = rest as [string, string];
           const roles = (patch.models?.roles as Record<string, Record<string, unknown>>) ?? {};
@@ -341,6 +349,7 @@ function printHelp(): void {
       "  pnpm cli settings             Print effective settings",
       "  pnpm cli settings set models.boss=gpt-4o limits.maxStepsPerTask=20",
       "  pnpm cli settings set models.roles.qa.model=gpt-4o-mini",
+      "  pnpm cli settings set team.names.backend=Bruno team.company=\"Acme Corp\"",
       "  pnpm cli settings key <key>   Store the API key (data/secrets.json, mode 600)",
       "  pnpm cli settings test        Probe the provider",
       "  pnpm cli sandbox              Show available command sandboxes",

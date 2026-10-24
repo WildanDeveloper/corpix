@@ -42,6 +42,7 @@ export async function buildRunContext(bundle: RuntimeBundle) {
         envForRoles(bundle.env),
       ),
       runtime.settings.models,
+      runtime.settings.team.names,
     ),
     runtime.settings.limits.maxStepsPerTask,
   );

@@ -382,7 +382,7 @@ export class OfficeScene {
       },
     });
     label.anchor.set(0.5, 1);
-    label.position.set(0, -46);
+    label.position.set(0, -54);
     root.addChild(label);
 
     const status = new Text({
@@ -395,7 +395,7 @@ export class OfficeScene {
       },
     });
     status.anchor.set(0.5, 1);
-    status.position.set(0, -58);
+    status.position.set(0, -68);
     root.addChild(status);
 
     const start = nearestWalkable(ENTRANCE);
@@ -905,7 +905,7 @@ export class OfficeScene {
       .lineTo(13, height + 5)
       .fill(0xf0f4f8);
     bubble.addChild(box, label);
-    bubble.position.set(-width / 2, -86 - height);
+    bubble.position.set(-width / 2, -96 - height);
     agent.root.addChild(bubble);
     agent.bubble = bubble;
     agent.bubbleTimer = seconds;

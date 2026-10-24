@@ -168,7 +168,11 @@ export class Orchestrator {
       options.budgetUsd ?? settingsLimits?.budgetUsdPerGoal ?? DEFAULT_LIMITS.budgetUsdPerGoal;
     this.team = options.runtime
       ? capTeamSteps(
-          applyRoleOverrides(options.team, options.runtime.settings.models),
+          applyRoleOverrides(
+            options.team,
+            options.runtime.settings.models,
+            options.runtime.settings.team.names,
+          ),
           this.limits.maxStepsPerTask,
         )
       : options.team;

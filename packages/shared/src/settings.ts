@@ -58,6 +58,13 @@ export const SafetySettingsSchema = z.object({
 });
 export type SafetySettings = z.infer<typeof SafetySettingsSchema>;
 
+export const TeamSettingsSchema = z.object({
+  company: z.string().min(1).default("Corpix"),
+  /** Display names per role id; empty falls back to the YAML team file. */
+  names: z.record(z.string(), z.string().min(1).max(40)).default({}),
+});
+export type TeamSettings = z.infer<typeof TeamSettingsSchema>;
+
 export const GitSettingsSchema = z.object({
   /** One worktree and branch per task; merge into the integration branch. */
   enabled: z.boolean().default(true),
@@ -76,6 +83,7 @@ export const AppSettingsSchema = z.object({
   models: ModelSettingsSchema,
   limits: LimitSettingsSchema,
   safety: SafetySettingsSchema,
+  team: TeamSettingsSchema.default({ company: "Corpix", names: {} }),
   git: GitSettingsSchema.default({ enabled: true, integrationBranch: "integration" }),
   pricing: PricingSchema.default({}),
   updatedAt: z.string().optional(),
@@ -94,6 +102,12 @@ export const SettingsPatchSchema = z.object({
     .optional(),
   limits: LimitSettingsSchema.partial().optional(),
   safety: SafetySettingsSchema.partial().optional(),
+  team: z
+    .object({
+      company: z.string().min(1).optional(),
+      names: z.record(z.string(), z.string().min(1).max(40)).optional(),
+    })
+    .optional(),
   git: GitSettingsSchema.partial().optional(),
   pricing: PricingSchema.optional(),
 });
@@ -123,6 +137,7 @@ export function defaultSettings(): AppSettings {
     models: {},
     limits: {},
     safety: {},
+    team: { company: "Corpix", names: {} },
     git: {},
     pricing: {},
   });
@@ -170,6 +185,7 @@ export function settingsFromEnv(env: {
       approvalMode: env.APPROVAL_MODE,
       sandbox: env.SANDBOX,
     },
+    team: { company: "Corpix", names: {} },
     git: {},
   });
 }
@@ -199,6 +215,11 @@ export function mergeSettings(current: AppSettings, patch: SettingsPatch): AppSe
     },
     limits: { ...current.limits, ...(patch.limits ?? {}) },
     safety: { ...current.safety, ...(patch.safety ?? {}) },
+    team: {
+      ...current.team,
+      ...(patch.team ?? {}),
+      names: { ...current.team.names, ...(patch.team?.names ?? {}) },
+    },
     git: { ...current.git, ...(patch.git ?? {}) },
     pricing: patch.pricing ?? current.pricing,
     updatedAt: new Date().toISOString(),
@@ -247,6 +268,7 @@ export function resolveSettings(
     models: { ...stored.models, roles: { ...stored.models.roles } },
     limits: { ...stored.limits },
     safety: { ...stored.safety },
+    team: { ...stored.team, names: { ...stored.team.names } },
     git: { ...stored.git },
     pricing: { ...stored.pricing },
   };

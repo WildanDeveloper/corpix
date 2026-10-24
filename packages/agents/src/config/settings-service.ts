@@ -81,7 +81,11 @@ export function stripPinned(patch: SettingsPatch, locked: readonly string[]): Se
  * Apply per-role model, step and temperature overrides. Returns a new team so an
  * in-flight run keeps the settings it started with.
  */
-export function applyRoleOverrides(team: LoadedTeam, models: ModelSettings): LoadedTeam {
+export function applyRoleOverrides(
+  team: LoadedTeam,
+  models: ModelSettings,
+  names: Record<string, string> = {},
+): LoadedTeam {
   const roles = new Map(team.roles);
   const apply = (member: TeamMember): TeamMember => {
     const override = models.roles[member.role.id];
@@ -95,7 +99,8 @@ export function applyRoleOverrides(team: LoadedTeam, models: ModelSettings): Loa
       ...(override?.temperature !== undefined ? { temperature: override.temperature } : {}),
     };
     roles.set(role.id, role);
-    return { ...member, role };
+    const name = names[member.role.id]?.trim();
+    return { ...member, name: name && name.length > 0 ? name : member.name, role };
   };
 
   return {

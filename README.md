@@ -53,13 +53,17 @@ place. See [`docs/DESIGN.md`](./docs/DESIGN.md) for the full target design.
   sandbox degrades to policy-and-jail with a visible warning.
 - **Safety primitives** — workspace jail (`realpath` + trailing separator),
   protected files, write scopes, command policy, scrubbed child environment.
+- **Editable team** — company and agent names live in settings, so you can
+  rename the Boss, Frontend, Backend, DevOps, QA and Docs from the UI or CLI
+  without editing YAML or restarting. Names flow into the office, prompts and
+  event payloads.
 - **CLI** — `run`, `runs`, `replay`, `resume`, `team`, `settings`, `pricing`,
   `sandbox`, `migrate`.
 - **Production build** — `pnpm build` produces self-contained `dist/server.mjs`
   and `dist/cli.mjs`; a non-root Dockerfile and compose file ship alongside.
 - **HTTP/WS server** — health, projects, runs, events, approvals, usage,
   settings, models and a WebSocket event stream with `?since=` reconnect.
-- **221 tests** covering the jail, glob matching, command policy, plan
+- **224 tests** covering the jail, glob matching, command policy, plan
   validation, budget maths, provider mapping, settings precedence, git
   isolation and merges, cancellation, office layout and pathfinding, the
   production bundles, and an end-to-end mock run.
@@ -175,6 +179,7 @@ Settings tab, `PATCH /api/settings`, or the CLI — no `.env` editing, no restar
 | Per-agent | model, max steps, **context tokens** and temperature for any role, overriding the tier default |
 | Limits | concurrency, steps per task, **context tokens per agent**, task timeout, tool output cap, max output tokens, **QA review rounds**, budget per goal, budget action |
 | Safety | approval mode, command sandbox (none / bwrap / docker) |
+| Team | company name and the display name of every agent |
 | Git | worktree isolation on/off, integration branch name, worktrees directory |
 | Pricing | USD per million input/output/cached tokens per model |
 
@@ -195,6 +200,7 @@ a number or URL) are ignored instead of crashing the server.
 pnpm cli settings
 pnpm cli settings set models.boss=gpt-4o-mini limits.maxStepsPerTask=20
 pnpm cli settings set models.roles.qa.model=gpt-4o-mini models.roles.qa.temperature=0.2
+pnpm cli settings set team.names.backend=Rizky team.names.qa=Sinta team.company="Acme Corp"
 pnpm cli settings key sk-...        # data/secrets.json, mode 600
 pnpm cli settings test              # one cheap provider round trip
 ```

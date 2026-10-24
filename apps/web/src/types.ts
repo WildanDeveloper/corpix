@@ -48,6 +48,11 @@ export interface SandboxInfo {
   detail: string;
 }
 
+export interface TeamSettings {
+  company: string;
+  names: Record<string, string>;
+}
+
 export interface GitSettings {
   enabled: boolean;
   integrationBranch: string;
@@ -65,6 +70,7 @@ export interface AppSettings {
   models: ModelSettings;
   limits: LimitSettings;
   safety: SafetySettings;
+  team: TeamSettings;
   git: GitSettings;
   pricing: Record<string, PricingEntry>;
   updatedAt?: string;
