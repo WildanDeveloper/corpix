@@ -58,6 +58,7 @@ export interface MindSettings {
   maxConcurrent: number;
   memorySize: number;
   allowOperatorChat: boolean;
+  language: "auto" | "id" | "en";
 }
 
 export interface MindSnapshot {

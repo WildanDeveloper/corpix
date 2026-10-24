@@ -119,6 +119,12 @@ export const MindSettingsSchema = z.object({
   memorySize: z.number().int().min(0).max(24).default(8),
   /** Let the model speak to the operator, not only to colleagues. */
   allowOperatorChat: z.boolean().default(true),
+  /**
+   * Language the agents speak. `auto` follows the company language, which is
+   * what most teams want; `id` and `en` force it so the office never drifts
+   * back to English after an English task.
+   */
+  language: z.enum(["auto", "id", "en"]).default("auto"),
 });
 export type MindSettings = z.infer<typeof MindSettingsSchema>;
 
@@ -132,6 +138,7 @@ export const DEFAULT_MIND: MindSettings = {
   maxConcurrent: 2,
   memorySize: 8,
   allowOperatorChat: true,
+  language: "auto",
 };
 
 /** Places the office can render. The prompt lists the ids, the scene maps them. */

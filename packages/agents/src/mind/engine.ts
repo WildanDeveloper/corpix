@@ -52,6 +52,8 @@ export interface MindEngineOptions {
   settings: () => MindSettings;
   /** Model to use when `mind.model` is empty; normally the cheap model. */
   defaultModel?: () => string;
+  /** Language the agents should speak, from `mind.language`. */
+  language?: () => "auto" | "id" | "en";
   log?: (line: string) => void;
 }
 
@@ -172,6 +174,8 @@ You are ${agent.name}, ${agent.title} at ${context.company}. You are a person at
 
 Temperament: ${TEMPERAMENTS[agent.role] ?? DEFAULT_TEMPERAMENT}
 
+${languageRule(this.options.language?.() ?? "auto")}
+
 It is ${formatClock(context.clock)}. The office has a coffee machine, a water cooler, the smoking spot outside, a whiteboard, a window, a meeting room, the server room and a break room. You may also stay at your desk, pace, stretch, stare at nothing, tidy up, read, or go talk to someone.
 
 Your colleagues right now:
@@ -219,6 +223,7 @@ Return ONE JSON object, nothing else:
 You are ${agent.name}, ${agent.title} at ${context.company}. You are a person, not an assistant. You have moods and opinions and you can be warm, blunt, funny, tired or angry.
 
 Temperament: ${TEMPERAMENTS[agent.role] ?? DEFAULT_TEMPERAMENT}
+${languageRule(this.options.language?.() ?? "auto")}
 Your current mood: ${state.mood.label} (valence ${state.mood.valence.toFixed(2)}, energy ${state.mood.arousal.toFixed(2)}).
 You are talking to ${other.name} (${other.title})${relation?.note ? `. You think of them: "${relation.note}"` : ""}.
 ${history ? `The exchange so far:\n${history}\n` : ""}
@@ -243,6 +248,22 @@ export function parseJson(raw: string): unknown {
     return JSON.parse(text.slice(start, end + 1)) as unknown;
   } catch {
     return null;
+  }
+}
+
+/**
+ * A person in an Indonesian office speaks Indonesian even when the model, the
+ * file names and the goal are English. The rule is explicit so it survives long
+ * English contexts.
+ */
+export function languageRule(language: "auto" | "id" | "en"): string {
+  switch (language) {
+    case "id":
+      return "Speak Bahasa Indonesia. Your thoughts and every line you say out loud must be in natural Indonesian, even if the task text or file names are English. Keep code, paths and identifiers as they are.";
+    case "en":
+      return "Speak English.";
+    default:
+      return "Speak the same language your colleagues are speaking; match the office, not the task text.";
   }
 }
 

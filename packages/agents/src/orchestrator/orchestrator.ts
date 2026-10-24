@@ -819,6 +819,7 @@ export class Orchestrator {
           "Write SPEC.md and NOTES.md, then call submit_plan.",
           "Every task must name a real, verifiable piece of work: a title a stranger understands, instructions that say what to build and in which files, and acceptance criteria a reviewer can check.",
           "Never use placeholder text (placeholder, TBD, todo, x, example). A plan made of those is rejected and costs another attempt.",
+          "If the goal asks for more than one language, make i18n its own task: a translation source (JSON or data-i18n attributes), a visible language switcher, a persisted choice, and no dependency on a build step unless the repo already has one. Never ship an English-only page when the goal names another language.",
           "Assign each task to a role that is allowed to write the files it needs.",
           "If the goal needs a file outside every scope, say so in the plan summary instead of assigning an impossible task.",
           lastErrors.length > 0

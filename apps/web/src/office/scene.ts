@@ -122,6 +122,8 @@ interface ActiveConversation {
 
 export interface SceneOptions {
   reducedMotion?: boolean;
+  /** Room names, so the canvas follows the UI language. */
+  zoneLabels?: Record<string, string>;
 }
 
 /**
@@ -133,6 +135,8 @@ export class OfficeScene {
   /** Real agent ids that map onto a canonical body (the Boss has two ids). */
   private readonly aliases = new Map<string, string>();
   private readonly deskScreens = new Map<string, Graphics>();
+  private readonly zoneLabels = new Map<string, Text>();
+  private zoneLabelText: Record<string, string>;
   private readonly roleNames = new Map<string, string>();
   private readonly puffs: Array<{ gfx: Graphics; life: number; max: number; vy: number }> = [];
   private readonly speech = new SpeechQueue(0.6);
@@ -150,12 +154,21 @@ export class OfficeScene {
   private ready = false;
   private destroyed = false;
 
+  /** Rename the rooms without recreating the scene. */
+  setZoneLabels(labels: Record<string, string>): void {
+    for (const [id, label] of Object.entries(labels)) {
+      const text = this.zoneLabels.get(id);
+      if (text) text.text = label;
+    }
+  }
+
   private constructor(
     private readonly app: Application,
     private readonly host: HTMLElement,
     options: SceneOptions,
   ) {
     this.reducedMotion = options.reducedMotion ?? false;
+    this.zoneLabelText = options.zoneLabels ?? {};
   }
 
   static async create(host: HTMLElement, options: SceneOptions = {}): Promise<OfficeScene> {
@@ -1306,7 +1319,7 @@ export class OfficeScene {
     // Zone labels.
     for (const zone of ZONES) {
       const label = new Text({
-        text: zone.label,
+        text: this.zoneLabelText[zone.id] ?? zone.label,
         style: {
           fontFamily: "ui-monospace, monospace",
           fontSize: 9,
@@ -1316,6 +1329,7 @@ export class OfficeScene {
       });
       label.position.set(zone.x * TILE + 6, zone.y * TILE + 5);
       stage.addChild(label);
+      this.zoneLabels.set(zone.id, label);
     }
 
     this.drawProps(stage);

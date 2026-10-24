@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState, type ReactElement } from "react";
 import { api, formatUsd } from "./api";
+import { useI18n } from "./i18n";
 import type {
   LimitSettings,
   PricingEntry,
@@ -38,6 +39,7 @@ function normalize(view: SettingsView): SettingsView {
           maxConcurrent: 2,
           memorySize: 8,
           allowOperatorChat: true,
+          language: "auto" as const,
         },
       team: settings.team ?? { company: "Corpix", names: {} },
     },
@@ -49,6 +51,7 @@ function isLocked(locked: string[], path: string): boolean {
 }
 
 export function SettingsPanel(): ReactElement {
+  const { t } = useI18n();
   const [view, setView] = useState<SettingsView | null>(null);
   const [draft, setDraft] = useState<Draft | null>(null);
   const [roles, setRoles] = useState<RolesView | null>(null);
@@ -130,7 +133,7 @@ export function SettingsPanel(): ReactElement {
       const normalized = normalize(next);
       setView(normalized);
       setDraft(normalized.settings);
-      setStatus({ kind: "ok", text: "Settings saved. New runs use them immediately." });
+      setStatus({ kind: "ok", text: t("Settings saved. New runs use them immediately.") });
       const refreshed = await api<RolesView>("/api/roles");
       setRoles(refreshed);
     } catch (error) {
@@ -150,7 +153,7 @@ export function SettingsPanel(): ReactElement {
       });
       setView(next);
       setApiKeyInput("");
-      setStatus({ kind: "ok", text: "API key stored outside the database." });
+      setStatus({ kind: "ok", text: t("API key stored outside the database.") });
     } catch (error) {
       setStatus({ kind: "error", text: (error as Error).message });
     } finally {
@@ -163,7 +166,7 @@ export function SettingsPanel(): ReactElement {
     try {
       const next = await api<SettingsView>("/api/settings/api-key", { method: "DELETE" });
       setView(next);
-      setStatus({ kind: "ok", text: "API key cleared." });
+      setStatus({ kind: "ok", text: t("API key cleared.") });
     } catch (error) {
       setStatus({ kind: "error", text: (error as Error).message });
     } finally {
@@ -207,23 +210,24 @@ export function SettingsPanel(): ReactElement {
     const unauthorized = status.text === "UNAUTHORIZED";
     return (
       <section className="panel">
-        <h2>Settings</h2>
+        <h2>{t("Settings")}</h2>
         {unauthorized ? (
           <div className="auth-banner">
-            <strong>Admin token required.</strong>
+            <strong>{t("Admin token required.")}</strong>
             <p>
-              This server was started with <code>ADMIN_TOKEN</code>, so every API call
-              needs it. Read the token and paste it into the <em>Admin token</em> field
-              at the top right:
+              {t("This server was started with")} <code>ADMIN_TOKEN</code>
+              {t(", so every API call needs it. Read the token and paste it into the")}{" "}
+              <em>{t("Admin token")}</em>
+              {t("field above, then press Enter.")}
             </p>
             <pre>docker compose exec corpix cat /data/admin-token</pre>
             <p className="muted">
-              Or open the page once with <code>?token=&lt;token&gt;</code> and it will be
-              remembered in this browser.
+              {t("Or open the page once with")} <code>?token=&lt;token&gt;</code>{" "}
+              {t("and it will be remembered in this browser.")}
             </p>
           </div>
         ) : (
-          <p className="muted">{status.text || "Loading settings…"}</p>
+          <p className="muted">{status.text || t("Loading settings…")}</p>
         )}
       </section>
     );
@@ -243,13 +247,13 @@ export function SettingsPanel(): ReactElement {
   return (
     <section className="panel">
       <header className="panel-header">
-        <h2>Settings</h2>
+        <h2>{t("Settings")}</h2>
         <div className="row">
           <button onClick={() => void test()} disabled={busy}>
-            Test connection
+            {t("Test connection")}
           </button>
           <button className="primary" onClick={() => void save()} disabled={busy}>
-            {busy ? "Saving…" : "Save"}
+            {busy ? t("Saving…") : t("Save")}
           </button>
         </div>
       </header>
@@ -257,9 +261,9 @@ export function SettingsPanel(): ReactElement {
       {status.text.length > 0 && <p className={`status ${status.kind}`}>{status.text}</p>}
 
       <fieldset>
-        <legend>Provider</legend>
+        <legend>{t("Provider")}</legend>
         <label>
-          Provider
+          {t("Provider")}
           <select
             value={draft.provider.name}
             disabled={isLocked(locked, "provider.name")}
@@ -267,12 +271,12 @@ export function SettingsPanel(): ReactElement {
               update("provider", { name: event.target.value as ProviderName })
             }
           >
-            <option value="mock">Mock (free, scripted)</option>
-            <option value="openai-compatible">OpenAI-compatible</option>
+            <option value="mock">{t("Mock (free, scripted)")}</option>
+            <option value="openai-compatible">{t("OpenAI-compatible")}</option>
           </select>
         </label>
         <label>
-          Base URL
+          {t("Base URL")}
           <input
             value={draft.provider.baseUrl}
             disabled={isLocked(locked, "provider.baseUrl")}
@@ -281,7 +285,7 @@ export function SettingsPanel(): ReactElement {
           />
         </label>
         <label>
-          Max tokens parameter
+          {t("Max tokens parameter")}
           <select
             value={draft.provider.maxTokensParam}
             disabled={isLocked(locked, "provider.maxTokensParam")}
@@ -296,7 +300,7 @@ export function SettingsPanel(): ReactElement {
           </select>
         </label>
         <label>
-          Request timeout (ms)
+          {t("Request timeout (ms)")}
           <input
             type="number"
             min={1000}
@@ -307,7 +311,7 @@ export function SettingsPanel(): ReactElement {
           />
         </label>
         <label>
-          Forced tool format
+          {t("Forced tool format")}
           <select
             value={draft.provider.toolChoiceStyle}
             disabled={isLocked(locked, "provider.toolChoiceStyle")}
@@ -317,15 +321,15 @@ export function SettingsPanel(): ReactElement {
               })
             }
           >
-            <option value="auto">auto (detect, recommended)</option>
-            <option value="object">object — OpenAI standard</option>
-            <option value="name">name string — some gateways</option>
-            <option value="required">required</option>
-            <option value="none">none — rely on the prompt</option>
+            <option value="auto">{t("auto (detect, recommended)")}</option>
+            <option value="object">{t("object — OpenAI standard")}</option>
+            <option value="name">{t("name string — some gateways")}</option>
+            <option value="required">{t("required")}</option>
+            <option value="none">{t("none — rely on the prompt")}</option>
           </select>
         </label>
         <label>
-          Prompt caching
+          {t("Prompt caching")}
           <select
             value={draft.provider.promptCaching}
             disabled={isLocked(locked, "provider.promptCaching")}
@@ -335,42 +339,43 @@ export function SettingsPanel(): ReactElement {
               })
             }
           >
-            <option value="auto">auto — provider decides (recommended)</option>
-            <option value="anthropic">explicit cache_control hints</option>
-            <option value="off">off</option>
+            <option value="auto">{t("auto — provider decides (recommended)")}</option>
+            <option value="anthropic">{t("explicit cache_control hints")}</option>
+            <option value="off">{t("off")}</option>
           </select>
         </label>
         <label>
-          API key {view.apiKeySet ? <span className="badge">{view.apiKeyPreview}</span> : <span className="badge warn">not set</span>}
+          API key {view.apiKeySet ? <span className="badge">{view.apiKeyPreview}</span> : <span className="badge warn">{t("not set")}</span>}
           <div className="row">
             <input
               type="password"
               value={apiKeyInput}
-              placeholder={view.apiKeySet ? "Replace stored key" : "sk-…"}
+              placeholder={view.apiKeySet ? t("Replace stored key") : "sk-…"}
               onChange={(event) => setApiKeyInput(event.target.value)}
               disabled={isLocked(locked, "provider.apiKey")}
             />
             <button onClick={() => void saveKey()} disabled={busy || apiKeyInput.trim() === ""}>
-              Save key
+              {t("Save key")}
             </button>
             <button
               onClick={() => void clearKey()}
               disabled={busy || !view.apiKeySet || isLocked(locked, "provider.apiKey")}
             >
-              Clear
+              {t("Clear")}
             </button>
           </div>
         </label>
         <p className="muted">
-          The key is stored in <code>data/secrets.json</code> with mode 600, never in SQLite, and
-          never sent back to the browser.
+          {t(
+            "The key is stored in data/secrets.json with mode 600, never in SQLite, and never sent back to the browser.",
+          )}
         </p>
       </fieldset>
 
       <fieldset>
-        <legend>Models</legend>
+        <legend>{t("Models")}</legend>
         <label>
-          Boss model
+          {t("Boss model")}
           <input
             list="known-models"
             value={draft.models.boss}
@@ -379,7 +384,7 @@ export function SettingsPanel(): ReactElement {
           />
         </label>
         <label>
-          Worker model
+          {t("Worker model")}
           <input
             list="known-models"
             value={draft.models.worker}
@@ -388,7 +393,7 @@ export function SettingsPanel(): ReactElement {
           />
         </label>
         <label>
-          Cheap model
+          {t("Cheap model")}
           <input
             list="known-models"
             value={draft.models.cheap}
@@ -404,20 +409,20 @@ export function SettingsPanel(): ReactElement {
       </fieldset>
 
       <fieldset>
-        <legend>Mind</legend>
+        <legend>{t("Mind")}</legend>
         <label>
-          Let agents think for themselves
+          {t("Let agents think for themselves")}
           <select
             value={draft.mind.enabled ? "on" : "off"}
             onChange={(event) => update("mind", { enabled: event.target.value === "on" })}
           >
-            <option value="on">on — each agent runs its own model turn</option>
-            <option value="off">off — agents sit still, no model calls, no cost</option>
+            <option value="on">{t("on — each agent runs its own model turn")}</option>
+            <option value="off">{t("off — agents sit still, no model calls, no cost")}</option>
           </select>
         </label>
         <div className="grid">
           <label>
-            Seconds between decisions
+            {t("Seconds between decisions")}
             <input
               type="number"
               min={3}
@@ -427,7 +432,7 @@ export function SettingsPanel(): ReactElement {
             />
           </label>
           <label>
-            Agents thinking at once
+            {t("Agents thinking at once")}
             <input
               type="number"
               min={1}
@@ -437,7 +442,7 @@ export function SettingsPanel(): ReactElement {
             />
           </label>
           <label>
-            Max output tokens per thought
+            {t("Max output tokens per thought")}
             <input
               type="number"
               min={64}
@@ -447,7 +452,7 @@ export function SettingsPanel(): ReactElement {
             />
           </label>
           <label>
-            Temperature
+            {t("Temperature")}
             <input
               type="number"
               min={0}
@@ -458,7 +463,7 @@ export function SettingsPanel(): ReactElement {
             />
           </label>
           <label>
-            Turns per conversation
+            {t("Turns per conversation")}
             <input
               type="number"
               min={2}
@@ -468,7 +473,7 @@ export function SettingsPanel(): ReactElement {
             />
           </label>
           <label>
-            Memories per agent
+            {t("Memories per agent")}
             <input
               type="number"
               min={0}
@@ -479,7 +484,20 @@ export function SettingsPanel(): ReactElement {
           </label>
         </div>
         <label>
-          Mind model
+          {t("Agent language")}
+          <select
+            value={draft.mind.language}
+            onChange={(event) =>
+              update("mind", { language: event.target.value as "auto" | "id" | "en" })
+            }
+          >
+            <option value="auto">{t("auto — follow the office")}</option>
+            <option value="id">Bahasa Indonesia</option>
+            <option value="en">English</option>
+          </select>
+        </label>
+        <label>
+          {t("Mind model")}
           <input
             value={draft.mind.model}
             placeholder={draft.models.cheap}
@@ -487,16 +505,16 @@ export function SettingsPanel(): ReactElement {
           />
         </label>
         <p className="muted">
-          Each agent gets its own turn with the real goal, its colleagues, its mood and its
-          memories, and decides what to do. Thoughts, moods and opinions are never generated by
-          Corpix — only stored and rendered. Leave the model empty to use the cheap model.
+          {t(
+            "Each agent gets its own turn with the real goal, its colleagues, its mood and its memories, and decides what to do. Thoughts, moods and opinions are never generated by Corpix — only stored and rendered. Leave the model empty to use the cheap model.",
+          )}
         </p>
       </fieldset>
 
       <fieldset>
-        <legend>Team</legend>
+        <legend>{t("Team")}</legend>
         <label>
-          Company name
+          {t("Company name")}
           <input
             value={draft.team.company}
             maxLength={40}
@@ -504,27 +522,28 @@ export function SettingsPanel(): ReactElement {
           />
         </label>
         <p className="muted">
-          Agent names are editable per role in the table below and apply to the office,
-          prompts and the event log. Clear a field to fall back to the name in
+          {t(
+            "Agent names are editable per role in the table below and apply to the office, prompts and the event log. Clear a field to fall back to the name in",
+          )}{" "}
           <code>config/team.default.yaml</code>.
         </p>
       </fieldset>
 
       <fieldset>
-        <legend>Per-agent overrides</legend>
+        <legend>{t("Per-agent overrides")}</legend>
         <p className="muted">
-          Leave a field empty to inherit the tier model and the role's YAML defaults.
+          {t("Leave empty to inherit the tier model and the role's YAML defaults.")}
         </p>
         <table className="grid">
           <thead>
             <tr>
-              <th>Agent</th>
-              <th>Name</th>
-              <th>Model</th>
-              <th>Max steps</th>
-              <th>Context tokens</th>
-              <th>Temperature</th>
-              <th>Effective</th>
+              <th>{t("Agent")}</th>
+              <th>{t("Name")}</th>
+              <th>{t("Model")}</th>
+              <th>{t("Max steps")}</th>
+              <th>{t("Context tokens")}</th>
+              <th>{t("Temperature")}</th>
+              <th>{t("Effective")}</th>
             </tr>
           </thead>
           <tbody>
@@ -572,11 +591,11 @@ export function SettingsPanel(): ReactElement {
       </fieldset>
 
       <fieldset>
-        <legend>Limits</legend>
+        <legend>{t("Limits")}</legend>
         <div className="grid-2">
           {limitFields.map(([key, label, hint]) => (
             <label key={key}>
-              {label} <span className="muted">({hint})</span>
+              {t(label)} <span className="muted">({t(hint)})</span>
               <input
                 type="number"
                 min={0}
@@ -590,7 +609,7 @@ export function SettingsPanel(): ReactElement {
             </label>
           ))}
           <label>
-            When the budget is hit
+            {t("When the budget is hit")}
             <select
               value={draft.limits.budgetAction}
               disabled={isLocked(locked, "limits.budgetAction")}
@@ -598,15 +617,15 @@ export function SettingsPanel(): ReactElement {
                 update("limits", { budgetAction: event.target.value as "pause" | "stop" })
               }
             >
-              <option value="pause">Pause the run</option>
-              <option value="stop">Stop the run</option>
+              <option value="pause">{t("Pause the run")}</option>
+              <option value="stop">{t("Stop the run")}</option>
             </select>
           </label>
         </div>
       </fieldset>
 
       <fieldset>
-        <legend>Git isolation</legend>
+        <legend>{t("Git isolation")}</legend>
         <label>
           <span className="row">
             <input
@@ -615,11 +634,11 @@ export function SettingsPanel(): ReactElement {
               disabled={isLocked(locked, "git.enabled")}
               onChange={(event) => update("git", { enabled: event.target.checked })}
             />
-            One worktree and branch per task
+            {t("One worktree and branch per task")}
           </span>
         </label>
         <label>
-          Integration branch
+          {t("Integration branch")}
           <input
             value={draft.git.integrationBranch}
             disabled={isLocked(locked, "git.integrationBranch")}
@@ -628,7 +647,7 @@ export function SettingsPanel(): ReactElement {
           />
         </label>
         <label>
-          Worktrees directory (optional, absolute)
+          {t("Worktrees directory (optional, absolute)")}
           <input
             value={draft.git.worktreesDir ?? ""}
             disabled={isLocked(locked, "git.worktreesDir")}
@@ -641,15 +660,16 @@ export function SettingsPanel(): ReactElement {
           />
         </label>
         <p className="muted">
-          Each task gets its own branch cut from the integration branch. Results are merged
-          automatically; conflicts are escalated, never guessed. Agents never push.
+          {t(
+            "Each task gets its own branch cut from the integration branch. Results are merged automatically; conflicts are escalated, never guessed. Agents never push.",
+          )}
         </p>
       </fieldset>
 
       <fieldset>
-        <legend>Safety</legend>
+        <legend>{t("Safety")}</legend>
         <label>
-          Approval mode
+          {t("Approval mode")}
           <select
             value={draft.safety.approvalMode}
             disabled={isLocked(locked, "safety.approvalMode")}
@@ -659,13 +679,13 @@ export function SettingsPanel(): ReactElement {
               })
             }
           >
-            <option value="ask">ask — approve every command</option>
-            <option value="auto-safe">auto-safe — allow safe test/lint/build</option>
-            <option value="auto">auto — approve everything allowed by policy</option>
+            <option value="ask">{t("ask — approve every command")}</option>
+            <option value="auto-safe">{t("auto-safe — allowlisted tests and builds")}</option>
+            <option value="auto">{t("auto — approve everything except hard denials")}</option>
           </select>
         </label>
         <label>
-          Sandbox
+          {t("Sandbox")}
           <select
             value={draft.safety.sandbox}
             disabled={isLocked(locked, "safety.sandbox")}
@@ -675,9 +695,9 @@ export function SettingsPanel(): ReactElement {
               })
             }
           >
-            <option value="none">none — policy and jail only</option>
-            <option value="bwrap">bubblewrap — no daemon needed (recommended)</option>
-            <option value="docker">docker — container per command</option>
+            <option value="none">{t("none — policy and jail only")}</option>
+            <option value="bwrap">{t("bubblewrap — no daemon needed (recommended)")}</option>
+            <option value="docker">{t("docker — container per command")}</option>
           </select>
         </label>
         {sandboxes.length > 0 && (
@@ -686,9 +706,9 @@ export function SettingsPanel(): ReactElement {
               <li key={entry.kind}>
                 <code>{entry.kind}</code>{" "}
                 {entry.available ? (
-                  <span className="ok">available</span>
+                  <span className="ok">{t("available")}</span>
                 ) : (
-                  <span className="warn">unavailable</span>
+                  <span className="warn">{t("unavailable")}</span>
                 )}{" "}
                 — {entry.detail}
               </li>
@@ -697,23 +717,23 @@ export function SettingsPanel(): ReactElement {
         )}
         {locked.length > 0 && (
           <p className="muted">
-            Pinned by environment variables: <code>{locked.join(", ")}</code>
+            {t("Pinned by environment variables:")} <code>{locked.join(", ")}</code>
           </p>
         )}
       </fieldset>
 
       <fieldset>
-        <legend>Pricing (USD per million tokens)</legend>
+        <legend>{t("Pricing (USD per million tokens)")}</legend>
         <p className="muted">
-          Required for the budget guard and cost meter. Use 0 for local models.
+          {t("Required for the budget guard and cost meter. Use 0 for local models.")}
         </p>
         <table className="grid">
           <thead>
             <tr>
-              <th>Model</th>
-              <th>Input</th>
-              <th>Output</th>
-              <th>Cached input</th>
+              <th>{t("Model")}</th>
+              <th>{t("Input")}</th>
+              <th>{t("Output")}</th>
+              <th>{t("Cached input")}</th>
               <th />
             </tr>
           </thead>
@@ -761,19 +781,20 @@ export function SettingsPanel(): ReactElement {
             })
           }
         >
-          Add worker model price
+          {t("Add worker model price")}
         </button>
       </fieldset>
 
       {probe && (
         <p className="muted">
-          Probe: {probe.ok ? "ok" : "failed"} — {probe.detail}
+          {t("Probe:")} {probe.ok ? t("ok") : t("failed")} — {probe.detail}
           {probe.models.length > 0 ? ` (${probe.models.length} models listed)` : ""}
         </p>
       )}
 
       <footer className="muted">
-        Last saved: {view.settings.updatedAt ?? "never"} · Budget default {formatUsd(draft.limits.budgetUsdPerGoal)}
+        {t("Last saved:")} {view.settings.updatedAt ?? t("never")} ·{" "}
+        {t("Budget default")} {formatUsd(draft.limits.budgetUsdPerGoal)}
       </footer>
     </section>
   );

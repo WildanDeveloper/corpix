@@ -5,6 +5,8 @@
 
 ![The Corpix office](docs/screenshots/office.png)
 
+![The same office in Indonesian](docs/screenshots/office-id.png)
+
 **Status: Phase 3 (working team).** The headless core, settings, git isolation,
 QA review loop, crash recovery, prompt caching and a pixel-art office are in
 place. See [`docs/DESIGN.md`](./docs/DESIGN.md) for the full target design.
@@ -230,6 +232,32 @@ Two things worth knowing:
   `npx <tool>` are denied by policy, and `node_modules` is excluded from commits.
   A generated site is therefore dependency-free by construction, which is also
   why it runs by opening the file.
+
+## Language
+
+The operator UI ships in **Indonesian and English**. The switch is in the top bar
+and the choice is remembered per browser; the first visit follows the browser
+language, so an `id-ID` browser opens in Indonesian.
+
+Covered: navigation, Office panel (dispatch, approvals, activity log, past runs),
+Minds panel (thoughts, sessions, memories, opinions), every Settings fieldset,
+the canvas room labels, and the office hint.
+
+Agent speech is separate and configurable under **Settings → Mind → Agent
+language**:
+
+| Value | Effect |
+|---|---|
+| `auto` | the agent matches the language of the office around it |
+| `id` | always Bahasa Indonesia, even when the task, file names and goal are English |
+| `en` | always English |
+
+The rule is injected into both the decision prompt and the conversation prompt, so
+an Indonesian office does not drift back to English after an English task.
+
+Translations are keyed by the English sentence (`apps/web/src/i18n-dict.ts`), so a
+missing entry falls back to English instead of rendering an empty label, and a test
+fails if any entry is blank.
 
 ## Settings (no restart, not hardcoded)
 

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type ReactElement } from "react";
 import { api, formatUsd, getToken, setToken, wsUrl } from "./api";
+import { LanguageSwitch, useI18n } from "./i18n";
 import { MindPanel } from "./MindPanel";
 import { SettingsPanel } from "./SettingsPanel";
 import { OfficeCanvas } from "./office/OfficeCanvas";
@@ -8,6 +9,7 @@ import type { ApprovalRow, Project, RolesView, RunEvent, RunRecord, UsageRespons
 type Tab = "office" | "minds" | "settings";
 
 export function App(): ReactElement {
+  const { t } = useI18n();
   const [tab, setTab] = useState<Tab>("office");
   const [token, setTokenState] = useState(getToken());
   const [authRequired, setAuthRequired] = useState(false);
@@ -40,21 +42,25 @@ export function App(): ReactElement {
       <nav className="tabs">
         <strong>Corpix</strong>
         <button className={tab === "office" ? "active" : ""} onClick={() => setTab("office")}>
-          Office
+          {t("Office")}
         </button>
         <button className={tab === "minds" ? "active" : ""} onClick={() => setTab("minds")}>
-          Minds
+          {t("Minds")}
         </button>
         <button className={tab === "settings" ? "active" : ""} onClick={() => setTab("settings")}>
-          Settings
+          {t("Settings")}
         </button>
-        <label className="token" title="Required only when ADMIN_TOKEN is set on the server">
-          Admin token
+        <LanguageSwitch />
+        <label
+          className="token"
+          title={t("Required only when ADMIN_TOKEN is set on the server")}
+        >
+          {t("Admin token")}
           <input
             ref={tokenInput}
             type="password"
             value={token}
-            placeholder="optional"
+            placeholder={t("optional")}
             onChange={(event) => {
               setTokenState(event.target.value);
               setToken(event.target.value);
@@ -64,14 +70,12 @@ export function App(): ReactElement {
       </nav>
       {needsToken && (
         <div className="auth-banner">
-          <strong>This server requires an admin token.</strong> Paste the token from
-          <code>docker compose exec corpix cat /data/admin-token</code> into the
-          <em>Admin token</em> field above, then press Enter.
-          <button
-            className="inline"
-            onClick={() => tokenInput.current?.focus()}
-          >
-            Focus field
+          <strong>{t("This server requires an admin token.")}</strong> {t("Paste the token from")}
+          <code>docker compose exec corpix cat /data/admin-token</code>
+          {t("into the")}
+          <em>{t("Admin token")}</em> {t("field above, then press Enter.")}
+          <button className="inline" onClick={() => tokenInput.current?.focus()}>
+            {t("Focus field")}
           </button>
         </div>
       )}
@@ -89,6 +93,7 @@ export function App(): ReactElement {
 }
 
 function OfficePanel(): ReactElement {
+  const { t } = useI18n();
   const [projects, setProjects] = useState<Project[]>([]);
   const [projectId, setProjectId] = useState("");
   const [goal, setGoal] = useState("");
@@ -245,13 +250,13 @@ function OfficePanel(): ReactElement {
     let budgetUsd = run.budgetUsd;
     if (run.status === "paused") {
       const answer = window.prompt(
-        "This run paused on its budget. New budget in USD:",
+        t("This run paused on its budget. New budget in USD:"),
         String((run.budgetUsd * 2).toFixed(2)),
       );
       if (answer === null) return;
       const parsed = Number(answer);
       if (!Number.isFinite(parsed) || parsed <= 0) {
-        setError("Budget must be a positive number.");
+        setError(t("Budget must be a positive number."));
         return;
       }
       budgetUsd = parsed;
@@ -295,10 +300,8 @@ function OfficePanel(): ReactElement {
     <div className="office">
       <section className="panel office-panel">
         <header className="panel-header">
-          <h2>Office</h2>
-          <span className="badge">
-            {runId ? `run ${runId}` : "idle"}
-          </span>
+          <h2>{t("Office")}</h2>
+          <span className="badge">{runId ?? t("idle")}</span>
         </header>
         <OfficeCanvas
           runId={runId}
@@ -310,17 +313,17 @@ function OfficePanel(): ReactElement {
 
       <section className="panel">
         <header className="panel-header">
-          <h2>Dispatch a goal</h2>
+          <h2>{t("Dispatch a goal")}</h2>
           <span className="badge">
-            {formatUsd(spent)} spent
+            {formatUsd(spent)} {t("spent")}
             {usage && usage.cacheHitRate > 0
-              ? ` · ${(usage.cacheHitRate * 100).toFixed(0)}% cached`
+              ? ` · ${(usage.cacheHitRate * 100).toFixed(0)}% ${t("cached")}`
               : ""}
           </span>
         </header>
         <div className="row">
           <select value={projectId} onChange={(event) => setProjectId(event.target.value)}>
-            <option value="">Select a project…</option>
+            <option value="">{t("Select a project…")}</option>
             {projects.map((project) => (
               <option key={project.id} value={project.id}>
                 {project.name}
@@ -329,31 +332,31 @@ function OfficePanel(): ReactElement {
           </select>
           <input
             value={goal}
-            placeholder="Build a todo app with email login"
+            placeholder={t("Build a todo app with email login")}
             onChange={(event) => setGoal(event.target.value)}
             onKeyDown={(event) => {
               if (event.key === "Enter" && goal.length > 0) void dispatch();
             }}
           />
           <button className="primary" onClick={() => void dispatch()} disabled={goal.length === 0}>
-            Dispatch
+            {t("Dispatch")}
           </button>
           {runId && (
-            <button onClick={() => void cancel()}>Cancel</button>
+            <button onClick={() => void cancel()}>{t("Cancel")}</button>
           )}        </div>
         {error.length > 0 && <p className="status error">{error}</p>}
 
         {projects.length === 0 && (
           <fieldset>
-            <legend>Register your first project</legend>
+            <legend>{t("Register your first project")}</legend>
             <div className="row">
               <input
-                placeholder="Name"
+                placeholder={t("Name")}
                 value={newProject.name}
                 onChange={(event) => setNewProject({ ...newProject, name: event.target.value })}
               />
               <input
-                placeholder="/absolute/path/to/repo"
+                placeholder={t("/absolute/path/to/repo")}
                 value={newProject.repoPath}
                 onChange={(event) => setNewProject({ ...newProject, repoPath: event.target.value })}
               />
@@ -361,7 +364,7 @@ function OfficePanel(): ReactElement {
                 onClick={() => void registerProject()}
                 disabled={newProject.name === "" || newProject.repoPath === ""}
               >
-                Register
+                {t("Register")}
               </button>
             </div>
           </fieldset>
@@ -370,20 +373,20 @@ function OfficePanel(): ReactElement {
 
       {approvals.length > 0 && (
         <section className="panel">
-          <h2>Approvals</h2>
+          <h2>{t("Approvals")}</h2>
           {approvals.map((approval) => (
             <div key={approval.id} className="approval">
-              <code>{approval.agentId}</code> wants to run <code>{approval.summary}</code>
+              <code>{approval.agentId}</code> {t("wants to run")} <code>{approval.summary}</code>
               <span className="badge warn">{approval.risk}</span>
-              <button onClick={() => void decide(approval.id, "approve")}>Approve</button>
-              <button onClick={() => void decide(approval.id, "deny")}>Deny</button>
+              <button onClick={() => void decide(approval.id, "approve")}>{t("Approve")}</button>
+              <button onClick={() => void decide(approval.id, "deny")}>{t("Deny")}</button>
             </div>
           ))}
         </section>
       )}
 
       <section className="panel">
-        <h2>Activity log</h2>
+        <h2>{t("Activity log")}</h2>
         <ol className="log">
           {events.map((event) => (
             <li key={event.seq}>
@@ -391,12 +394,12 @@ function OfficePanel(): ReactElement {
               <span className="muted">{summarise(event)}</span>
             </li>
           ))}
-          {events.length === 0 && <li className="muted">No events yet.</li>}
+          {events.length === 0 && <li className="muted">{t("No events yet.")}</li>}
         </ol>
       </section>
 
       <section className="panel">
-        <h2>Past runs</h2>
+        <h2>{t("Past runs")}</h2>
         <ul className="runs">
           {runs.map((run) => (
             <li key={run.id}>
@@ -405,14 +408,14 @@ function OfficePanel(): ReactElement {
                 <button
                   className="inline"
                   onClick={() => void resume(run)}
-                  title="Continue this run where it stopped"
+                  title={t("Continue this run where it stopped")}
                 >
-                  Resume
+                  {t("Resume")}
                 </button>
               )}
             </li>
           ))}
-          {runs.length === 0 && <li className="muted">No runs yet.</li>}
+          {runs.length === 0 && <li className="muted">{t("No runs yet.")}</li>}
         </ul>
       </section>
     </div>

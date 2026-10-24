@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { MindEngine, parseJson, type MindAgent, type MindEngineOptions, type MindState } from "@corpix/agents";
+import { MindEngine, languageRule, parseJson, type MindAgent, type MindEngineOptions, type MindState } from "@corpix/agents";
 import { MindRunner } from "@corpix/agents";
 import { MockProvider } from "@corpix/agents";
 import { DEFAULT_MIND, type MindSettings } from "@corpix/shared";
@@ -272,5 +272,50 @@ describe("the runner keeps consequences, not a script", () => {
     await new Promise((resolve) => setTimeout(resolve, 10));
     const mind = loop.minds().find((entry) => entry.agentId === "backend");
     expect((mind?.memories.length ?? 0) <= 2).toBe(true);
+  });
+});
+
+describe("agent language", () => {
+  it("tells an Indonesian office to speak Indonesian even with English tasks", () => {
+    const rule = languageRule("id");
+    expect(rule).toContain("Bahasa Indonesia");
+    expect(rule).toContain("even if the task text");
+    expect(rule).toContain("code, paths and identifiers");
+  });
+
+  it("can force English", () => {
+    expect(languageRule("en")).toBe("Speak English.");
+  });
+
+  it("otherwise follows the room", () => {
+    expect(languageRule("auto")).toMatch(/match the office/);
+  });
+
+  it("puts the rule in both decision and conversation prompts", async () => {
+    const prompts: string[] = [];
+    const engine = new MindEngine({
+      provider: () => ({
+        name: "fake",
+        complete: async (request) => {
+          prompts.push(
+            request.messages
+              .flatMap((message) => message.content)
+              .map((block) => (block.type === "text" ? block.text : ""))
+              .join(""),
+          );
+          return {
+            content: [{ type: "text", text: '{"say":"halo","action":"sit"}' }],
+            stopReason: "end_turn",
+            usage: { inputTokens: 1, outputTokens: 1 },
+          };
+        },
+      }),
+      settings: () => ({ ...DEFAULT_MIND, language: "id" }) as MindSettings,
+      language: () => "id",
+    });
+    await engine.decide(backend, freshState(), context);
+    await engine.turn(frontend, freshState(), context, backend, [], true);
+    expect(prompts.length).toBe(2);
+    for (const prompt of prompts) expect(prompt).toContain("Bahasa Indonesia");
   });
 });

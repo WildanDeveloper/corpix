@@ -471,3 +471,15 @@ footer {
   max-height: 150px;
   overflow: auto;
 }
+
+.language {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+}
+
+.language select {
+  padding: 4px 6px;
+  font-size: 13px;
+}

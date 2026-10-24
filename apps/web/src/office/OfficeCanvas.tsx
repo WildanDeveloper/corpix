@@ -1,5 +1,6 @@
-import { useEffect, useRef, type ReactElement } from "react";
+import { useEffect, useMemo, useRef, type ReactElement } from "react";
 import type { RunEvent } from "../types";
+import { useI18n } from "../i18n";
 import { OfficeScene } from "./scene";
 
 interface OfficeCanvasProps {
@@ -22,6 +23,19 @@ export function OfficeCanvas({ runId, events, roleNames, context }: OfficeCanvas
   const eventsRef = useRef(events);
   const roleNamesRef = useRef(roleNames);
   const contextRef = useRef(context);
+  const { t, locale } = useI18n();
+  const zoneLabels = useMemo(
+    () => ({
+      boss: t("BOSS OFFICE"),
+      dev: t("DEV BULLPEN"),
+      meeting: t("MEETING ROOM"),
+      server: t("SERVER ROOM"),
+      break: t("BREAK ROOM"),
+    }),
+    [t],
+  );
+  const zoneLabelsRef = useRef(zoneLabels);
+  zoneLabelsRef.current = zoneLabels;
   eventsRef.current = events;
   roleNamesRef.current = roleNames;
   contextRef.current = context;
@@ -34,7 +48,10 @@ export function OfficeCanvas({ runId, events, roleNames, context }: OfficeCanvas
     const host = hostRef.current;
     if (!host) return;
 
-    void OfficeScene.create(host, { reducedMotion: reduced }).then((scene) => {
+    void OfficeScene.create(host, {
+      reducedMotion: reduced,
+      zoneLabels: zoneLabelsRef.current,
+    }).then((scene) => {
       if (cancelled) {
         scene.destroy();
         return;
@@ -67,6 +84,10 @@ export function OfficeCanvas({ runId, events, roleNames, context }: OfficeCanvas
   }, [context]);
 
   useEffect(() => {
+    sceneRef.current?.setZoneLabels(zoneLabels);
+  }, [zoneLabels, locale]);
+
+  useEffect(() => {
     const scene = sceneRef.current;
     if (!scene) return;
     for (const event of events) {
@@ -97,12 +118,13 @@ export function OfficeCanvas({ runId, events, roleNames, context }: OfficeCanvas
       <div className="office-canvas" ref={hostRef} />
       {events.length === 0 && (
         <div className="office-empty">
-          <span>Dispatch a goal to wake the office</span>
+          <span>{t("Dispatch a goal to wake the office")}</span>
         </div>
       )}
       <p className="muted office-hint">
-        The office is a renderer for the event stream. Hover an agent to read its
-        name; every animation is backed by a real event.
+        {t(
+          "The office is a renderer for the event stream. Hover an agent to read its name; every animation is backed by a real event.",
+        )}
       </p>
     </div>
   );

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type ReactElement } from "react";
 import { api } from "./api";
+import { useI18n } from "./i18n";
 import type { AgentSessionView, MindSnapshot } from "./types";
 
 /**
@@ -10,6 +11,7 @@ import type { AgentSessionView, MindSnapshot } from "./types";
  * operator can talk to any of them and get an answer in character.
  */
 export function MindPanel(): ReactElement {
+  const { t } = useI18n();
   const [minds, setMinds] = useState<MindSnapshot[]>([]);
   const [sessions, setSessions] = useState<AgentSessionView[]>([]);
   const [error, setError] = useState("");
@@ -62,10 +64,11 @@ export function MindPanel(): ReactElement {
 
   return (
     <section className="panel mind-panel">
-      <h2>Minds</h2>
+      <h2>{t("Minds")}</h2>
       <p className="muted">
-        Every agent runs on its own model turn: it decides what to do, what it thinks, and how it
-        feels. Nothing here is scripted by Corpix. Talk to one and it answers in character.
+        {t(
+          "Every agent runs on its own model turn: it decides what to do, what it thinks, and how it feels. Nothing here is scripted by Corpix. Talk to one and it answers in character.",
+        )}
       </p>
       {error && <p className="error">{error}</p>}
 
@@ -96,22 +99,26 @@ export function MindPanel(): ReactElement {
               </header>
 
               <p className="mind-thought">
-                {mind.thought ? `“${mind.thought}”` : <span className="muted">not thinking yet</span>}
+                {mind.thought ? `“${mind.thought}”` : <span className="muted">{t("not thinking yet")}</span>}
               </p>
-              {mind.doing && <p className="muted small">doing: {mind.doing}</p>}
+              {mind.doing && (
+                <p className="muted small">
+                  {t("doing")}: {mind.doing}
+                </p>
+              )}
 
               <div className="mind-actions">
                 <button
                   className="inline"
                   onClick={() => setOpen(expanded ? null : mind.agentId)}
                 >
-                  {expanded ? "Hide details" : "Details"}
+                  {expanded ? t("Hide details") : t("Details")}
                 </button>
                 <button
                   className="inline"
                   onClick={() => setTalking(talking === mind.agentId ? null : mind.agentId)}
                 >
-                  {talking === mind.agentId ? "Cancel" : "Talk"}
+                  {talking === mind.agentId ? t("Cancel") : t("Talk")}
                 </button>
               </div>
 
@@ -127,34 +134,37 @@ export function MindPanel(): ReactElement {
                     autoFocus
                     value={message}
                     maxLength={500}
-                    placeholder={`Say something to ${mind.name}…`}
+                    placeholder={t("Say something to {name}…", { name: mind.name })}
                     onChange={(event) => setMessage(event.target.value)}
                   />
                   <button className="primary" disabled={busy || message.trim().length === 0}>
-                    {busy ? "…" : "Send"}
+                    {busy ? "…" : t("Send")}
                   </button>
                 </form>
               )}
 
               {expanded && (
                 <div className="mind-detail">
-                  <h4>Own session</h4>
+                  <h4>{t("Own session")}</h4>
                   {(() => {
                     const session = sessions.find((entry) => entry.role === mind.role);
-                    if (!session) return <p className="muted small">No work session yet.</p>;
+                    if (!session) return <p className="muted small">{t("No work session yet.")}</p>;
                     return (
                       <>
                         <p className="muted small">
-                          {session.tasks} task(s) · {session.inputTokens.toLocaleString()} in /{" "}
-                          {session.outputTokens.toLocaleString()} out tokens on this agent
+                          {t("{tasks} task(s) · {input} in / {output} out tokens on this agent", {
+                            tasks: session.tasks,
+                            input: session.inputTokens.toLocaleString(),
+                            output: session.outputTokens.toLocaleString(),
+                          })}
                         </p>
                         <pre className="session-memory">{session.memory || "(empty)"}</pre>
                       </>
                     );
                   })()}
-                  <h4>Remembers</h4>
+                  <h4>{t("Remembers")}</h4>
                   {mind.memories.length === 0 ? (
-                    <p className="muted small">Nothing yet.</p>
+                    <p className="muted small">{t("Nothing yet.")}</p>
                   ) : (
                     <ul>
                       {mind.memories.map((memory, index) => (
@@ -162,9 +172,9 @@ export function MindPanel(): ReactElement {
                       ))}
                     </ul>
                   )}
-                  <h4>Thinks of the others</h4>
+                  <h4>{t("Thinks of the others")}</h4>
                   {Object.keys(mind.relationships).length === 0 ? (
-                    <p className="muted small">No opinions formed yet.</p>
+                    <p className="muted small">{t("No opinions formed yet.")}</p>
                   ) : (
                     <ul>
                       {Object.entries(mind.relationships).map(([id, relation]) => (
@@ -175,7 +185,10 @@ export function MindPanel(): ReactElement {
                             {relation.sentiment.toFixed(2)}
                           </span>
                           {relation.note ? ` — ${relation.note}` : ""}
-                          <span className="muted"> ({relation.talks} talks)</span>
+                          <span className="muted">
+                            {" "}
+                            ({t("{count} talks", { count: relation.talks })})
+                          </span>
                         </li>
                       ))}
                     </ul>

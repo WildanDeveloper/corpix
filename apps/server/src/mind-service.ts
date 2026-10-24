@@ -51,6 +51,7 @@ export class MindService {
         provider: options.provider,
         settings: () => this.settings(),
         defaultModel: () => options.settings.load().settings.models.cheap,
+        language: () => this.settings().language,
         log: options.log,
       }),
       settings: () => this.settings(),
