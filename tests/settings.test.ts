@@ -12,6 +12,8 @@ import {
   type LoadedTeam,
 } from "@corpix/agents";
 import {
+  AppSettingsSchema,
+  CancelledError,
   defaultSettings,
   maskSettings,
   mergeSettings,
@@ -92,10 +94,36 @@ describe("settings defaults and merging", () => {
   });
 });
 
-describe("environment overrides", () => {
-  it("lets the environment pin values and reports them as locked", () => {
+describe("environment override", () => {
+  it("does NOT pin values unless listed in CORPIX_PIN", () => {
+    const stored = mergeSettings(settingsFromEnv(envDefaults), {
+      models: { boss: "stored-boss" },
+    });
+    const runtime = resolveSettings(stored, "stored-key", {
+      LLM_PROVIDER: "mock",
+      BOSS_MODEL: "env-boss",
+      APPROVAL_MODE: "auto",
+      MAX_CONCURRENT_AGENTS: "7",
+      LLM_API_KEY: "env-key",
+    });
+    expect(runtime.settings.models.boss).toBe("stored-boss");
+    expect(runtime.settings.safety.approvalMode).toBe("ask");
+    expect(runtime.settings.limits.maxConcurrentAgents).toBe(3);
+    expect(runtime.apiKey).toBe("stored-key");
+    expect(runtime.locked).toEqual([]);
+  });
+
+  it("uses the environment key as a fallback when none is stored", () => {
+    const stored = settingsFromEnv(envDefaults);
+    const runtime = resolveSettings(stored, "", { LLM_API_KEY: "env-key" });
+    expect(runtime.apiKey).toBe("env-key");
+    expect(runtime.locked).toEqual([]);
+  });
+
+  it("lets CORPIX_PIN force values and reports them as locked", () => {
     const stored = settingsFromEnv(envDefaults);
     const runtime = resolveSettings(stored, "stored-key", {
+      CORPIX_PIN: "WORKER_MODEL,LLM_API_KEY,safety.approvalMode,MAX_CONCURRENT_AGENTS",
       WORKER_MODEL: "env-worker",
       LLM_API_KEY: "env-key",
       APPROVAL_MODE: "auto",
@@ -105,29 +133,47 @@ describe("environment overrides", () => {
     expect(runtime.apiKey).toBe("env-key");
     expect(runtime.settings.safety.approvalMode).toBe("auto");
     expect(runtime.settings.limits.maxConcurrentAgents).toBe(7);
-    expect(runtime.locked).toContain("models.worker");
-    expect(runtime.locked).toContain("provider.apiKey");
+    expect(runtime.locked.sort()).toEqual(
+      [
+        "models.worker",
+        "provider.apiKey",
+        "limits.maxConcurrentAgents",
+        "safety.approvalMode",
+      ].sort(),
+    );
   });
 
-  it("uses stored values when the environment is empty", () => {
-    const stored = mergeSettings(settingsFromEnv(envDefaults), {
-      models: { boss: "stored-boss" },
-      provider: { baseUrl: "https://stored.example/v1" },
+  it("treats CORPIX_PIN=* as pinning everything that is set", () => {
+    const runtime = resolveSettings(settingsFromEnv(envDefaults), "", {
+      CORPIX_PIN: "*",
+      BOSS_MODEL: "env-boss",
+      MAX_STEPS_PER_TASK: "9",
     });
-    const runtime = resolveSettings(stored, "stored-key", {
-      LLM_API_KEY: "",
-      BOSS_MODEL: "   ",
-    });
-    expect(runtime.settings.models.boss).toBe("stored-boss");
-    expect(runtime.settings.provider.baseUrl).toBe("https://stored.example/v1");
-    expect(runtime.apiKey).toBe("stored-key");
-    expect(runtime.locked).toEqual([]);
+    expect(runtime.settings.models.boss).toBe("env-boss");
+    expect(runtime.settings.limits.maxStepsPerTask).toBe(9);
+    expect(runtime.locked).toContain("models.boss");
   });
 
-  it("ignores invalid numeric overrides", () => {
+  it("ignores out-of-range and invalid pinned numbers instead of crashing", () => {
     const stored = settingsFromEnv(envDefaults);
-    const runtime = resolveSettings(stored, "", { MAX_CONCURRENT_AGENTS: "many" });
-    expect(runtime.settings.limits.maxConcurrentAgents).toBe(3);
+    for (const value of ["many", "9999", "-3"]) {
+      const runtime = resolveSettings(stored, "", {
+        CORPIX_PIN: "MAX_CONCURRENT_AGENTS",
+        MAX_CONCURRENT_AGENTS: value,
+      });
+      expect(runtime.settings.limits.maxConcurrentAgents).toBe(3);
+      expect(runtime.locked).toEqual([]);
+    }
+  });
+
+  it("ignores an invalid pinned base URL", () => {
+    const stored = settingsFromEnv(envDefaults);
+    const runtime = resolveSettings(stored, "", {
+      CORPIX_PIN: "LLM_BASE_URL",
+      LLM_BASE_URL: "file:///etc/passwd",
+    });
+    expect(runtime.settings.provider.baseUrl).toBe(stored.provider.baseUrl);
+    expect(runtime.locked).toEqual([]);
   });
 });
 
@@ -173,13 +219,32 @@ describe("per-role model overrides", () => {
       boss: "boss-x",
       worker: "worker-x",
       cheap: "cheap-x",
-      roles: { backend: { model: "backend-x", maxSteps: 7, temperature: 0.4 } },
+      roles: {
+        backend: { model: "backend-x", maxSteps: 7, contextTokens: 1_000_000, temperature: 0.4 },
+      },
     });
     const backend = applied.workers.find((w) => w.role.id === "backend")?.role;
     expect(backend?.model).toBe("backend-x");
     expect(backend?.maxSteps).toBe(7);
+    expect(backend?.contextTokens).toBe(1_000_000);
     expect(backend?.temperature).toBe(0.4);
     expect(applied.roles.get("backend")?.model).toBe("backend-x");
+  });
+
+  it("keeps each role's context budget independent", () => {
+    const applied = applyRoleOverrides(team, {
+      boss: "b",
+      worker: "w",
+      cheap: "c",
+      roles: {
+        backend: { contextTokens: 1_000_000 },
+        qa: { contextTokens: 200_000 },
+      },
+    });
+    const byId = new Map(applied.workers.map((w) => [w.role.id, w.role]));
+    expect(byId.get("backend")?.contextTokens).toBe(1_000_000);
+    expect(byId.get("qa")?.contextTokens).toBe(200_000);
+    expect(byId.get("frontend")?.contextTokens).toBeUndefined();
   });
 });
 
@@ -196,6 +261,23 @@ describe("SettingsService", () => {
 
     const again = service.load();
     expect(again.settings.models.boss).toBe("from-ui");
+  });
+
+  it("never persists pinned environment values or lets a patch overwrite them", () => {
+    const store = new MemoryStore();
+    const service = new SettingsService(
+      store,
+      { CORPIX_PIN: "WORKER_MODEL", WORKER_MODEL: "pinned-worker" },
+      envDefaults,
+    );
+    service.load();
+    const saved = service.save({ models: { worker: "hacked", boss: "boss-ui" } });
+    expect(saved.settings.models.worker).toBe("pinned-worker");
+    expect(saved.settings.models.boss).toBe("boss-ui");
+
+    const stored = store.readSettings() as AppSettings;
+    expect(stored.models.worker).toBe("worker-default");
+    expect(stored.models.boss).toBe("boss-ui");
   });
 
   it("stores the API key separately and reports it without leaking", () => {
@@ -277,5 +359,41 @@ describe("orchestrator uses settings", () => {
     });
     const outcome = await orchestrator.run("Spend");
     expect(outcome.status).toBe("paused");
+  });
+
+  it("returns a cancelled outcome when the run is aborted", async () => {
+    const store = new MemoryStore();
+    const controller = new AbortController();
+    const provider = {
+      name: "slow",
+      complete: (request: { signal?: AbortSignal }) =>
+        new Promise<never>((_resolve, reject) => {
+          request.signal?.addEventListener("abort", () => reject(new CancelledError()), {
+            once: true,
+          });
+        }),
+    };
+
+    const orchestrator = new Orchestrator({
+      store,
+      provider,
+      team,
+      runtime: runtimeWith({}),
+      workspacePath: workspace,
+      projectId: "test",
+      runId: "run_cancel",
+      approvalMode: "auto",
+      signal: controller.signal,
+    });
+
+    const promise = orchestrator.run("Cancel me");
+    setTimeout(() => controller.abort(), 20);
+    const outcome = await promise;
+
+    expect(outcome.status).toBe("cancelled");
+    expect(store.getRun("run_cancel")?.status).toBe("cancelled");
+    const types = store.listEvents("run_cancel").map((event) => event.type);
+    expect(types).toContain("run.cancelled");
+    expect(types).not.toContain("run.failed");
   });
 });

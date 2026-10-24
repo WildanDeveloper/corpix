@@ -8,6 +8,27 @@ export interface ProviderProbe {
   models: string[];
 }
 
+/** Model ids for the settings dropdown, without spending tokens. */
+export async function listModels(
+  runtime: RuntimeSettings,
+): Promise<{ models: string[]; ok: boolean; detail?: string }> {
+  if (runtime.settings.provider.name === "mock") {
+    return { models: ["mock-boss", "mock-worker", "mock-cheap"], ok: true };
+  }
+  const provider = new OpenAICompatibleProvider({
+    baseUrl: runtime.settings.provider.baseUrl,
+    apiKey: runtime.apiKey,
+    maxTokensParam: runtime.settings.provider.maxTokensParam,
+    timeoutMs: runtime.settings.provider.requestTimeoutMs,
+  });
+  try {
+    const models = await provider.listModels();
+    return { models, ok: true };
+  } catch (error) {
+    return { models: [], ok: false, detail: (error as Error).message };
+  }
+}
+
 /**
  * One cheap round trip used by the settings page's "Test connection" button.
  * Mock mode succeeds without touching the network.

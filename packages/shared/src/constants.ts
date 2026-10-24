@@ -47,6 +47,7 @@ export type RiskLevel = (typeof RISK_LEVELS)[number];
 export const DEFAULT_LIMITS = {
   maxConcurrentAgents: 3,
   maxStepsPerTask: 40,
+  contextTokens: 120_000,
   taskTimeoutMinutes: 20,
   toolOutputMaxChars: 8000,
   budgetUsdPerGoal: 5,

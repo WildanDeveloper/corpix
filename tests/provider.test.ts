@@ -83,8 +83,7 @@ describe("toChatMessages", () => {
 });
 
 describe("OpenAICompatibleProvider", () => {
-  it("maps a chat completion response into content blocks", async () => {
-    const fetchMock = (async () =>
+  it("maps a chat completion response into content blocks", async () => {    const fetchMock = (async () =>
       new Response(
         JSON.stringify({
           choices: [
@@ -146,5 +145,97 @@ describe("OpenAICompatibleProvider", () => {
     await expect(
       provider.complete({ model: "m", system: "s", messages: [], tools: [], maxTokens: 1 }),
     ).rejects.toThrow(/401/);
+  });
+
+  it("falls back when a server rejects the object form of tool_choice", async () => {
+    const bodies: Array<Record<string, unknown>> = [];
+    const fetchMock = (async (_url: string, init: RequestInit) => {
+      const body = JSON.parse(String(init.body)) as Record<string, unknown>;
+      bodies.push(body);
+      if (typeof body.tool_choice === "object") {
+        return new Response(
+          JSON.stringify({ error: { message: "cannot unmarshal object into field tool_choice" } }),
+          { status: 400 },
+        );
+      }
+      return new Response(
+        JSON.stringify({
+          choices: [
+            {
+              message: {
+                tool_calls: [
+                  { id: "c1", type: "function", function: { name: "submit_plan", arguments: "{}" } },
+                ],
+              },
+              finish_reason: "tool_calls",
+            },
+          ],
+        }),
+        { status: 200 },
+      );
+    }) as unknown as typeof fetch;
+
+    const provider = new OpenAICompatibleProvider({ baseUrl: "http://x/v1", fetch: fetchMock });
+    const request = {
+      model: "m",
+      system: "s",
+      messages: [],
+      tools: [
+        {
+          name: "submit_plan",
+          description: "plan",
+          jsonSchema: { type: "object", properties: {} },
+        },
+      ],
+      toolChoice: { name: "submit_plan" },
+      maxTokens: 20,
+    };
+
+    const first = await provider.complete(request);
+    expect(first.stopReason).toBe("tool_use");
+    expect(bodies).toHaveLength(2);
+    expect(typeof bodies[1]?.tool_choice).toBe("string");
+
+    // The learned style is reused, so the next call needs only one request.
+    await provider.complete(request);
+    expect(bodies).toHaveLength(3);
+    expect(typeof bodies[2]?.tool_choice).toBe("string");
+  });
+
+  it("honours an explicit name-string style", async () => {
+    let captured: Record<string, unknown> = {};
+    const fetchMock = (async (_url: string, init: RequestInit) => {
+      captured = JSON.parse(String(init.body)) as Record<string, unknown>;
+      return new Response(
+        JSON.stringify({ choices: [{ message: { content: "ok" }, finish_reason: "stop" }] }),
+        { status: 200 },
+      );
+    }) as unknown as typeof fetch;
+
+    const provider = new OpenAICompatibleProvider({
+      baseUrl: "http://x/v1",
+      toolChoiceStyle: "name",
+      fetch: fetchMock,
+    });
+    await provider.complete({
+      model: "m",
+      system: "s",
+      messages: [],
+      tools: [{ name: "submit_plan", description: "p", jsonSchema: {} }],
+      toolChoice: { name: "submit_plan" },
+      maxTokens: 10,
+    });
+    expect(captured.tool_choice).toBe("submit_plan");
+  });
+
+  it("explains an unknown model instead of surfacing a raw provider blob", async () => {
+    const fetchMock = (async () =>
+      new Response(JSON.stringify({ error: { message: "model [nope] service info not found" } }), {
+        status: 400,
+      })) as unknown as typeof fetch;
+    const provider = new OpenAICompatibleProvider({ baseUrl: "http://x/v1", fetch: fetchMock });
+    await expect(
+      provider.complete({ model: "nope", system: "s", messages: [], tools: [], maxTokens: 1 }),
+    ).rejects.toThrow(/does not know the model "nope"/);
   });
 });

@@ -99,6 +99,7 @@ function describeBlock(block: ContentBlock): string {
 /** Detect the same call repeated too often, see "Loop detection". */
 export class LoopDetector {
   private readonly seen = new Map<string, number>();
+  private consecutiveFailures = 0;
   constructor(private readonly failAt = 5) {}
 
   /** Returns a nudge message at 3 repeats, or "fail" at the threshold. */
@@ -114,8 +115,22 @@ export class LoopDetector {
     return result;
   }
 
+  /**
+   * Track tool results so an agent that keeps failing with *different* commands
+   * also gets nudged. Returns "nudge" every time the streak hits a multiple of
+   * three, and "fail" once it becomes hopeless.
+   */
+  observeResults(results: readonly { isError: boolean }[]): "ok" | "nudge" | "fail" {
+    const anyError = results.some((result) => result.isError);
+    this.consecutiveFailures = anyError ? this.consecutiveFailures + 1 : 0;
+    if (this.consecutiveFailures >= 8) return "fail";
+    if (this.consecutiveFailures > 0 && this.consecutiveFailures % 3 === 0) return "nudge";
+    return "ok";
+  }
+
   reset(): void {
     this.seen.clear();
+    this.consecutiveFailures = 0;
   }
 }
 

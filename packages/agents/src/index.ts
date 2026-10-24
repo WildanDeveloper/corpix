@@ -7,6 +7,7 @@ export * from "./providers/probe";
 export * from "./config/settings-service";
 
 export * from "./runtime/agent-loop";
+export * from "./runtime/approval";
 export * from "./runtime/budget";
 export * from "./runtime/context";
 

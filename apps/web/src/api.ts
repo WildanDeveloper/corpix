@@ -1,8 +1,10 @@
 export async function api<T>(path: string, init?: RequestInit): Promise<T> {
+  const token = getToken();
   const response = await fetch(path, {
     ...init,
     headers: {
       "content-type": "application/json",
+      ...(token ? { authorization: `Bearer ${token}` } : {}),
       ...(init?.headers ?? {}),
     },
   });
@@ -18,9 +20,30 @@ export async function api<T>(path: string, init?: RequestInit): Promise<T> {
   return data as T;
 }
 
+const TOKEN_KEY = "corpix.adminToken";
+
+export function getToken(): string {
+  try {
+    return window.localStorage.getItem(TOKEN_KEY) ?? "";
+  } catch {
+    return "";
+  }
+}
+
+export function setToken(token: string): void {
+  try {
+    if (token.length === 0) window.localStorage.removeItem(TOKEN_KEY);
+    else window.localStorage.setItem(TOKEN_KEY, token);
+  } catch {
+    // localStorage can be disabled; the token simply won't persist
+  }
+}
+
 export function wsUrl(path: string): string {
   const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-  return `${protocol}//${window.location.host}${path}`;
+  const token = getToken();
+  const suffix = token ? `${path.includes("?") ? "&" : "?"}token=${encodeURIComponent(token)}` : "";
+  return `${protocol}//${window.location.host}${path}${suffix}`;
 }
 
 export function formatUsd(value: number): string {

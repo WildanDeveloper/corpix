@@ -85,8 +85,13 @@ describe("tool schemas", () => {
       (entry) => entry.name === "submit_plan",
     );
     expect(schema).toBeDefined();
+    const roles = [...team.roles.keys()];
     const json = JSON.stringify(schema?.jsonSchema);
-    expect(json).toContain('"enum":["boss","frontend","backend","devops","qa"]');
+    for (const roleId of roles) {
+      expect(json).toContain(`"${roleId}"`);
+    }
+    // A role that is not loaded must not be selectable.
+    expect(json).not.toContain('"designer"');
   });
 });
 

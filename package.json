@@ -16,8 +16,8 @@
     "dev:demo": "LLM_PROVIDER=mock pnpm dev",
     "cli": "tsx apps/cli/src/index.ts",
     "db:migrate": "tsx apps/cli/src/migrate.ts",
-    "build": "tsc -p tsconfig.json --noEmit && pnpm --filter @corpix/web build",
-    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "build": "pnpm typecheck && pnpm --filter @corpix/web build",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p apps/web/tsconfig.json --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
     "lint": "echo 'eslint config lands with the web app (Phase 1)' && exit 0"

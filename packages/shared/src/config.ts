@@ -7,6 +7,11 @@ export const RoleSchema = z.object({
   sprite: z.string().default("palette-blue"),
   model: z.string().min(1),
   maxSteps: z.number().int().positive().default(40),
+  /**
+   * Context budget for THIS agent's own conversation. Every agent gets its own
+   * budget; they are never pooled. Falls back to the global limit when unset.
+   */
+  contextTokens: z.number().int().positive().max(2_000_000).optional(),
   /** Sampling temperature; provider default when omitted. */
   temperature: z.number().min(0).max(2).optional(),
   tools: z.array(z.string()).min(1),

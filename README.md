@@ -101,15 +101,22 @@ Settings tab, `PATCH /api/settings`, or the CLI — no `.env` editing, no restar
 | Provider | `mock` or `openai-compatible`, base URL, `max_tokens` vs `max_completion_tokens`, request timeout |
 | API key | stored in `data/secrets.json` (mode 600), **never** in SQLite and never returned to the browser |
 | Models | Boss / worker / cheap model ids |
-| Per-agent | model, max steps and temperature for any role, overriding the tier default |
-| Limits | concurrency, steps per task, task timeout, tool output cap, max output tokens, budget per goal, budget action |
+| Per-agent | model, max steps, **context tokens** and temperature for any role, overriding the tier default |
+| Limits | concurrency, steps per task, **context tokens per agent**, task timeout, tool output cap, max output tokens, budget per goal, budget action |
 | Safety | approval mode, sandbox |
 | Pricing | USD per million input/output/cached tokens per model |
 
-**Precedence.** Environment variables win when they are set, so a deployment can
-pin a provider or key. `GET /api/settings` returns a `locked` array with the
-dotted paths that the UI should disable. Everything else comes from the database;
-the database is seeded from the environment on first boot.
+**Precedence.** On first boot the environment seeds the database. After that the
+database wins, so the UI stays editable. To force a value from the environment,
+list it in `CORPIX_PIN` (comma separated env names or dotted paths, or `*`):
+
+```bash
+CORPIX_PIN=LLM_PROVIDER,LLM_BASE_URL,LLM_API_KEY
+```
+
+`GET /api/settings` returns a `locked` array with the dotted paths that are
+pinned; the UI disables exactly those controls. Invalid pinned values (a typo in
+a number or URL) are ignored instead of crashing the server.
 
 ```bash
 # CLI equivalents
@@ -128,6 +135,9 @@ POST  /api/settings/test
 GET   /api/models
 GET   /api/roles
 ```
+
+`GET /api/models` only lists models; it never spends tokens. Only
+`POST /api/settings/test` makes a (tiny) completion call.
 
 Example patch:
 
@@ -161,7 +171,31 @@ Example patch:
 | `pnpm typecheck` | `tsc --noEmit` |
 | `pnpm dev` | Server and Vite UI together |
 
-## Configuration
+## Sessions and context (per agent, never pooled)
+
+Each running agent has its **own conversation and its own context budget**. A
+1M-token model does not give "1M shared by everyone": every agent builds its own
+request from its own history, so each one can use up to the model's window
+independently.
+
+| Thing | Scope |
+|---|---|
+| Message history (`messages`) | **Per agent + per task** (`task_id`, `agent_id`) |
+| Context budget before compaction | **Per agent** (`limits.contextTokens`, default 120k; override per role with `models.roles.<id>.contextTokens`) |
+| Model context window | Per API request, enforced by the provider |
+| Email/mailbox (`message_agent`) | Per target agent |
+| Shared knowledge | `SPEC.md`, `NOTES.md`, explicit messages — files, not hidden context |
+| Budget in USD | **Per run** (one goal, one cap) — this is money, not context |
+
+Set a different budget per agent in the Settings tab; e.g. give the Boss 900k and
+QA 200k. When an agent exceeds its budget, only *that agent's* older turns are
+compacted; other agents are untouched.
+
+A new task starts a new agent session even for the same role. That is deliberate
+isolation: task A cannot quietly pollute task B. Pass knowledge through
+`SPEC.md`, `NOTES.md` or `message_agent` instead.
+
+
 
 Environment variables are documented in `.env.example`. They only act as
 defaults and as optional pins: after the first boot, runtime settings live in

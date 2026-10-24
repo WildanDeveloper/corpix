@@ -26,22 +26,15 @@ export class SettingsService {
   ) {}
 
   load(): RuntimeSettings {
-    const raw = this.store.readSettings();
-    let stored: AppSettings;
-    if (raw === null) {
-      stored = settingsFromEnv(this.envDefaults);
-      this.store.writeSettings(stored);
-    } else {
-      const parsed = AppSettingsSchema.safeParse(raw);
-      stored = parsed.success ? parsed.data : settingsFromEnv(this.envDefaults);
-    }
-    return resolveSettings(stored, this.store.readApiKey(), this.env);
+    return resolveSettings(this.stored(), this.store.readApiKey(), this.env);
   }
 
   save(patch: SettingsPatch): RuntimeSettings {
-    const current = this.load().settings;
-    const valid = SettingsPatchSchema.parse(patch);
-    const next = mergeSettings(current, valid);
+    // Merge into the *stored* settings, not the resolved view: environment
+    // pins must never leak into the database.
+    const locked = this.load().locked;
+    const clean = stripPinned(patch, locked);
+    const next = mergeSettings(this.stored(), SettingsPatchSchema.parse(clean));
     this.store.writeSettings(next);
     return this.load();
   }
@@ -54,6 +47,34 @@ export class SettingsService {
   hasStoredApiKey(): boolean {
     return this.store.readApiKey().length > 0;
   }
+
+  /** Persisted settings only, without environment pins. */
+  private stored(): AppSettings {
+    const raw = this.store.readSettings();
+    if (raw === null) {
+      const seeded = settingsFromEnv(this.envDefaults);
+      this.store.writeSettings(seeded);
+      return seeded;
+    }
+    const parsed = AppSettingsSchema.safeParse(raw);
+    return parsed.success ? parsed.data : settingsFromEnv(this.envDefaults);
+  }
+}
+
+/**
+ * Remove pinned paths from a patch so an API client cannot write a value the
+ * deployment has pinned, which would resurface if the pin were removed later.
+ */
+export function stripPinned(patch: SettingsPatch, locked: readonly string[]): SettingsPatch {
+  const clean = structuredClone(patch) as Record<string, Record<string, unknown> | undefined>;
+  for (const path of locked) {
+    if (path === "provider.apiKey") continue; // not part of the patch
+    const [section, key] = path.split(".");
+    if (!section || !key) continue;
+    const bucket = clean[section];
+    if (bucket && typeof bucket === "object") delete bucket[key];
+  }
+  return clean as SettingsPatch;
 }
 
 /**
@@ -68,6 +89,9 @@ export function applyRoleOverrides(team: LoadedTeam, models: ModelSettings): Loa
       ...member.role,
       model: override?.model ?? modelForRole(member.role.id, models),
       maxSteps: override?.maxSteps ?? member.role.maxSteps,
+      ...(override?.contextTokens !== undefined
+        ? { contextTokens: override.contextTokens }
+        : {}),
       ...(override?.temperature !== undefined ? { temperature: override.temperature } : {}),
     };
     roles.set(role.id, role);

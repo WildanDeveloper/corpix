@@ -2,6 +2,7 @@ import path from "node:path";
 import {
   SettingsService,
   applyRoleOverrides,
+  capTeamSteps,
   envForRoles,
   loadTeam,
   probeProvider,
@@ -136,9 +137,12 @@ async function showTeam(configDir: string, env: ReturnType<typeof parseEnv>): Pr
   const store = openStore(env);
   const service = new SettingsService(store, process.env, env);
   const runtime = service.load();
-  const team = applyRoleOverrides(
-    await loadTeam(configDir, "team.default.yaml", envForRoles(env)),
-    runtime.settings.models,
+  const team = capTeamSteps(
+    applyRoleOverrides(
+      await loadTeam(configDir, "team.default.yaml", envForRoles(env)),
+      runtime.settings.models,
+    ),
+    runtime.settings.limits.maxStepsPerTask,
   );
   process.stdout.write(`${team.team.name}\n`);
   process.stdout.write(`Boss: ${team.boss.name} (${team.boss.role.id}) -> ${team.boss.role.model}\n`);
@@ -222,6 +226,17 @@ async function settingsCommand(args: string[], env: ReturnType<typeof parseEnv>)
           const roles = (patch.models?.roles as Record<string, Record<string, unknown>>) ?? {};
           roles[roleId] = { ...(roles[roleId] ?? {}), [field]: value };
           patch.models = { ...(patch.models ?? {}), roles };
+          continue;
+        }
+        if (section === "pricing" && rest.length === 1) {
+          const [field] = rest as [string];
+          const pricing = (patch.pricing ?? {}) as Record<string, Record<string, unknown>>;
+          pricing[key] = { ...(pricing[key] ?? {}), [field]: value };
+          patch.pricing = pricing;
+          continue;
+        }
+        if (rest.length > 0) {
+          process.stderr.write(`Ignoring "${pair}": unknown path\n`);
           continue;
         }
         patch[section] = { ...(patch[section] ?? {}), [key]: value };

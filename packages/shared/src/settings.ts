@@ -1,18 +1,24 @@
 import { z } from "zod";
 import { APPROVAL_MODES, BUDGET_ACTIONS, DEFAULT_LIMITS } from "./constants";
-import { PricingSchema, type Pricing } from "./config";
+import { PricingSchema } from "./config";
 
 export const ProviderSettingsSchema = z.object({
   name: z.enum(["openai-compatible", "mock"]).default("mock"),
   baseUrl: z.string().url().default("http://127.0.0.1:11434/v1"),
   maxTokensParam: z.enum(["max_tokens", "max_completion_tokens"]).default("max_tokens"),
   requestTimeoutMs: z.number().int().positive().max(600_000).default(120_000),
+  /**
+   * Forced-tool wire format. `auto` learns from 400 responses, which matters
+   * because some OpenAI-compatible servers only accept the function-name string.
+   */
+  toolChoiceStyle: z.enum(["auto", "object", "name", "required", "none"]).default("auto"),
 });
 export type ProviderSettings = z.infer<typeof ProviderSettingsSchema>;
 
 export const RoleOverrideSchema = z.object({
   model: z.string().min(1).optional(),
   maxSteps: z.number().int().positive().max(500).optional(),
+  contextTokens: z.number().int().positive().max(2_000_000).optional(),
   temperature: z.number().min(0).max(2).optional(),
 });
 export type RoleOverride = z.infer<typeof RoleOverrideSchema>;
@@ -29,6 +35,8 @@ export type ModelSettings = z.infer<typeof ModelSettingsSchema>;
 export const LimitSettingsSchema = z.object({
   maxConcurrentAgents: z.number().int().positive().max(32).default(DEFAULT_LIMITS.maxConcurrentAgents),
   maxStepsPerTask: z.number().int().positive().max(500).default(DEFAULT_LIMITS.maxStepsPerTask),
+  /** Default context budget per agent; each agent has its own, never shared. */
+  contextTokens: z.number().int().positive().max(2_000_000).default(DEFAULT_LIMITS.contextTokens),
   taskTimeoutMinutes: z.number().positive().max(1440).default(DEFAULT_LIMITS.taskTimeoutMinutes),
   toolOutputMaxChars: z.number().int().positive().max(200_000).default(DEFAULT_LIMITS.toolOutputMaxChars),
   maxOutputTokens: z.number().int().positive().max(200_000).default(DEFAULT_LIMITS.maxOutputTokens),
@@ -107,6 +115,7 @@ export function settingsFromEnv(env: {
   CHEAP_MODEL: string;
   MAX_CONCURRENT_AGENTS: number;
   MAX_STEPS_PER_TASK: number;
+  CONTEXT_TOKENS_PER_AGENT?: number;
   TASK_TIMEOUT_MINUTES: number;
   TOOL_OUTPUT_MAX_CHARS: number;
   BUDGET_USD_PER_GOAL: number;
@@ -128,6 +137,7 @@ export function settingsFromEnv(env: {
     limits: {
       maxConcurrentAgents: env.MAX_CONCURRENT_AGENTS,
       maxStepsPerTask: env.MAX_STEPS_PER_TASK,
+      contextTokens: env.CONTEXT_TOKENS_PER_AGENT ?? DEFAULT_LIMITS.contextTokens,
       taskTimeoutMinutes: env.TASK_TIMEOUT_MINUTES,
       toolOutputMaxChars: env.TOOL_OUTPUT_MAX_CHARS,
       budgetUsdPerGoal: env.BUDGET_USD_PER_GOAL,
@@ -172,9 +182,34 @@ export function mergeSettings(current: AppSettings, patch: SettingsPatch): AppSe
 }
 
 /**
- * Environment variables win when set, so a deployment can pin a provider
- * without the UI silently overriding it. `locked` tells the UI which controls
- * to disable.
+ * Environment variables seed the database on first boot, but they do NOT pin
+ * values by default. A deployment that wants to force a value lists it in
+ * `CORPIX_PIN` (comma separated env names or dotted paths, or `*`).
+ *
+ * This matters because `.env.example` sets every variable: without an explicit
+ * pin list, copying it would lock the entire settings UI.
+ */
+export const PIN_ENV = "CORPIX_PIN";
+
+export function parsePins(env: NodeJS.ProcessEnv): Set<string> {
+  const raw = env[PIN_ENV]?.trim();
+  if (!raw) return new Set();
+  if (raw === "*" || raw.toLowerCase() === "all") return new Set(["*"]);
+  return new Set(
+    raw
+      .split(",")
+      .map((entry) => entry.trim())
+      .filter((entry) => entry.length > 0),
+  );
+}
+
+function isPinned(pins: Set<string>, envName: string, path: string): boolean {
+  return pins.has("*") || pins.has(envName) || pins.has(path);
+}
+
+/**
+ * Apply environment pins. Values that fail validation are ignored instead of
+ * crashing the server, so a typo in `.env` cannot take the whole app down.
  */
 export function resolveSettings(
   stored: AppSettings,
@@ -190,77 +225,127 @@ export function resolveSettings(
     pricing: { ...stored.pricing },
   };
   const locked: string[] = [];
+  const pins = parsePins(env);
   let apiKey = storedApiKey;
 
-  const setString = (name: string, path: string[], apply: (value: string) => void): void => {
+  const setString = (
+    name: string,
+    path: string[],
+    apply: (value: string) => boolean,
+  ): void => {
     const value = env[name];
     if (value === undefined || value.trim() === "") return;
-    apply(value.trim());
-    locked.push(path.join("."));
+    if (!isPinned(pins, name, path.join("."))) return;
+    if (apply(value.trim())) locked.push(path.join("."));
   };
-  const setNumber = (name: string, path: string[], apply: (value: number) => void): void => {
+
+  const setNumber = (
+    name: string,
+    path: string[],
+    min: number,
+    max: number,
+    apply: (value: number) => void,
+  ): void => {
     const value = env[name];
     if (value === undefined || value.trim() === "") return;
+    if (!isPinned(pins, name, path.join("."))) return;
     const parsed = Number(value);
-    if (!Number.isFinite(parsed)) return;
+    if (!Number.isFinite(parsed) || parsed < min || parsed > max) return;
     apply(parsed);
     locked.push(path.join("."));
   };
 
   const providerName = env.LLM_PROVIDER;
-  if (providerName === "mock" || providerName === "openai-compatible") {
+  if (
+    (providerName === "mock" || providerName === "openai-compatible") &&
+    isPinned(pins, "LLM_PROVIDER", "provider.name")
+  ) {
     settings.provider.name = providerName;
     locked.push("provider.name");
   }
-  setString("LLM_BASE_URL", ["provider", "baseUrl"], (v) => {
-    settings.provider.baseUrl = v;
+  setString("LLM_BASE_URL", ["provider", "baseUrl"], (value) => {
+    try {
+      const url = new URL(value);
+      if (url.protocol !== "http:" && url.protocol !== "https:") return false;
+      settings.provider.baseUrl = value;
+      return true;
+    } catch {
+      return false;
+    }
   });
   const maxTokensParam = env.LLM_MAX_TOKENS_PARAM;
-  if (maxTokensParam === "max_tokens" || maxTokensParam === "max_completion_tokens") {
+  if (
+    (maxTokensParam === "max_tokens" || maxTokensParam === "max_completion_tokens") &&
+    isPinned(pins, "LLM_MAX_TOKENS_PARAM", "provider.maxTokensParam")
+  ) {
     settings.provider.maxTokensParam = maxTokensParam;
     locked.push("provider.maxTokensParam");
   }
-  setString("LLM_API_KEY", ["provider", "apiKey"], (v) => {
-    apiKey = v;
+
+  // The key in the environment is a fallback when no key has been stored yet,
+  // and an override only when explicitly pinned.
+  const envKey = env.LLM_API_KEY?.trim();
+  if (envKey) {
+    if (isPinned(pins, "LLM_API_KEY", "provider.apiKey")) {
+      apiKey = envKey;
+      locked.push("provider.apiKey");
+    } else if (apiKey.length === 0) {
+      apiKey = envKey;
+    }
+  }
+
+  setString("BOSS_MODEL", ["models", "boss"], (value) => {
+    settings.models.boss = value;
+    return true;
+  });
+  setString("WORKER_MODEL", ["models", "worker"], (value) => {
+    settings.models.worker = value;
+    return true;
+  });
+  setString("CHEAP_MODEL", ["models", "cheap"], (value) => {
+    settings.models.cheap = value;
+    return true;
   });
 
-  setString("BOSS_MODEL", ["models", "boss"], (v) => {
-    settings.models.boss = v;
+  setNumber("MAX_CONCURRENT_AGENTS", ["limits", "maxConcurrentAgents"], 1, 32, (value) => {
+    settings.limits.maxConcurrentAgents = value;
   });
-  setString("WORKER_MODEL", ["models", "worker"], (v) => {
-    settings.models.worker = v;
+  setNumber("MAX_STEPS_PER_TASK", ["limits", "maxStepsPerTask"], 1, 500, (value) => {
+    settings.limits.maxStepsPerTask = value;
   });
-  setString("CHEAP_MODEL", ["models", "cheap"], (v) => {
-    settings.models.cheap = v;
+  setNumber("CONTEXT_TOKENS_PER_AGENT", ["limits", "contextTokens"], 1_000, 2_000_000, (value) => {
+    settings.limits.contextTokens = value;
   });
-
-  setNumber("MAX_CONCURRENT_AGENTS", ["limits", "maxConcurrentAgents"], (v) => {
-    settings.limits.maxConcurrentAgents = v;
+  setNumber("TASK_TIMEOUT_MINUTES", ["limits", "taskTimeoutMinutes"], 0.1, 1440, (value) => {
+    settings.limits.taskTimeoutMinutes = value;
   });
-  setNumber("MAX_STEPS_PER_TASK", ["limits", "maxStepsPerTask"], (v) => {
-    settings.limits.maxStepsPerTask = v;
+  setNumber("TOOL_OUTPUT_MAX_CHARS", ["limits", "toolOutputMaxChars"], 100, 200_000, (value) => {
+    settings.limits.toolOutputMaxChars = value;
   });
-  setNumber("TASK_TIMEOUT_MINUTES", ["limits", "taskTimeoutMinutes"], (v) => {
-    settings.limits.taskTimeoutMinutes = v;
-  });
-  setNumber("TOOL_OUTPUT_MAX_CHARS", ["limits", "toolOutputMaxChars"], (v) => {
-    settings.limits.toolOutputMaxChars = v;
-  });
-  setNumber("BUDGET_USD_PER_GOAL", ["limits", "budgetUsdPerGoal"], (v) => {
-    settings.limits.budgetUsdPerGoal = v;
+  setNumber("BUDGET_USD_PER_GOAL", ["limits", "budgetUsdPerGoal"], 0, 1_000_000, (value) => {
+    settings.limits.budgetUsdPerGoal = value;
   });
   const budgetAction = env.BUDGET_ACTION;
-  if (budgetAction === "pause" || budgetAction === "stop") {
+  if (
+    (budgetAction === "pause" || budgetAction === "stop") &&
+    isPinned(pins, "BUDGET_ACTION", "limits.budgetAction")
+  ) {
     settings.limits.budgetAction = budgetAction;
     locked.push("limits.budgetAction");
   }
   const approval = env.APPROVAL_MODE;
-  if (approval === "ask" || approval === "auto-safe" || approval === "auto") {
+  if (
+    (approval === "ask" || approval === "auto-safe" || approval === "auto") &&
+    isPinned(pins, "APPROVAL_MODE", "safety.approvalMode")
+  ) {
     settings.safety.approvalMode = approval;
     locked.push("safety.approvalMode");
   }
   const sandbox = env.SANDBOX;
-  if (sandbox === "none" || sandbox === "docker") {
+  if (
+    (sandbox === "none" || sandbox === "docker") &&
+    isPinned(pins, "SANDBOX", "safety.sandbox")
+  ) {
     settings.safety.sandbox = sandbox;
     locked.push("safety.sandbox");
   }
@@ -285,17 +370,10 @@ export function previewKey(apiKey: string): string {
 }
 
 /** Model id for a role: per-role override wins over the tier default. */
-export function modelForRole(
-  roleId: string,
-  models: ModelSettings,
-): string {
+export function modelForRole(roleId: string, models: ModelSettings): string {
   const override = models.roles[roleId]?.model;
   if (override) return override;
   if (roleId === "boss") return models.boss;
   if (roleId === "docs") return models.cheap;
   return models.worker;
-}
-
-export function pricingForModel(pricing: Pricing, model: string): Pricing[string] | undefined {
-  return pricing[model];
 }

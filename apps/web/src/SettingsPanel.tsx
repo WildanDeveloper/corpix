@@ -5,6 +5,7 @@ import type {
   PricingEntry,
   ProbeResult,
   ProviderName,
+  ProviderSettings,
   RoleOverride,
   RolesView,
   SettingsView,
@@ -116,12 +117,28 @@ export function SettingsPanel(): ReactElement {
     }
   };
 
+  const clearKey = async (): Promise<void> => {
+    setBusy(true);
+    try {
+      const next = await api<SettingsView>("/api/settings/api-key", { method: "DELETE" });
+      setView(next);
+      setStatus({ kind: "ok", text: "API key cleared." });
+    } catch (error) {
+      setStatus({ kind: "error", text: (error as Error).message });
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const test = async (): Promise<void> => {
     setBusy(true);
     try {
       const result = await api<ProbeResult>("/api/settings/test", {
         method: "POST",
-        body: JSON.stringify({ model: draft?.models.boss }),
+        body: JSON.stringify({
+          model: draft?.models.boss,
+          patch: { provider: draft?.provider },
+        }),
       });
       setProbe(result);
       if (result.models.length > 0) setModels(result.models);
@@ -157,6 +174,7 @@ export function SettingsPanel(): ReactElement {
   const limitFields: Array<[keyof LimitSettings, string, string]> = [
     ["maxConcurrentAgents", "Max concurrent agents", "1–32"],
     ["maxStepsPerTask", "Max steps per task", "per agent loop"],
+    ["contextTokens", "Context tokens per agent", "each agent gets its own"],
     ["taskTimeoutMinutes", "Task timeout (minutes)", "wall clock"],
     ["toolOutputMaxChars", "Tool output cap (chars)", "truncation"],
     ["maxOutputTokens", "Max output tokens", "per model call"],
@@ -230,6 +248,24 @@ export function SettingsPanel(): ReactElement {
           />
         </label>
         <label>
+          Forced tool format
+          <select
+            value={draft.provider.toolChoiceStyle}
+            disabled={isLocked(locked, "provider.toolChoiceStyle")}
+            onChange={(event) =>
+              update("provider", {
+                toolChoiceStyle: event.target.value as ProviderSettings["toolChoiceStyle"],
+              })
+            }
+          >
+            <option value="auto">auto (detect, recommended)</option>
+            <option value="object">object — OpenAI standard</option>
+            <option value="name">name string — some gateways</option>
+            <option value="required">required</option>
+            <option value="none">none — rely on the prompt</option>
+          </select>
+        </label>
+        <label>
           API key {view.apiKeySet ? <span className="badge">{view.apiKeyPreview}</span> : <span className="badge warn">not set</span>}
           <div className="row">
             <input
@@ -241,6 +277,12 @@ export function SettingsPanel(): ReactElement {
             />
             <button onClick={() => void saveKey()} disabled={busy || apiKeyInput.trim() === ""}>
               Save key
+            </button>
+            <button
+              onClick={() => void clearKey()}
+              disabled={busy || !view.apiKeySet || isLocked(locked, "provider.apiKey")}
+            >
+              Clear
             </button>
           </div>
         </label>
@@ -297,6 +339,7 @@ export function SettingsPanel(): ReactElement {
               <th>Agent</th>
               <th>Model</th>
               <th>Max steps</th>
+              <th>Context tokens</th>
               <th>Temperature</th>
               <th>Effective</th>
             </tr>
@@ -310,6 +353,7 @@ export function SettingsPanel(): ReactElement {
                   effective={roles.boss.role}
                   override={draft.models.roles[roles.boss.role.id] ?? {}}
                   models={knownModels}
+                  defaultContextTokens={draft.limits.contextTokens}
                   onChange={updateRole}
                 />
                 {roles.workers.map((worker) => (
@@ -320,6 +364,7 @@ export function SettingsPanel(): ReactElement {
                     effective={worker.role}
                     override={draft.models.roles[worker.role.id] ?? {}}
                     models={knownModels}
+                    defaultContextTokens={draft.limits.contextTokens}
                     onChange={updateRole}
                   />
                 ))}
@@ -479,13 +524,22 @@ export function SettingsPanel(): ReactElement {
 interface RoleRowProps {
   name: string;
   roleId: string;
-  effective: { model: string; maxSteps: number; temperature?: number };
+  effective: { model: string; maxSteps: number; contextTokens?: number; temperature?: number };
   override: RoleOverride;
   models: string[];
+  defaultContextTokens: number;
   onChange: (roleId: string, patch: RoleOverride) => void;
 }
 
-function RoleRow({ name, roleId, effective, override, models, onChange }: RoleRowProps): ReactElement {
+function RoleRow({
+  name,
+  roleId,
+  effective,
+  override,
+  models,
+  defaultContextTokens,
+  onChange,
+}: RoleRowProps): ReactElement {
   return (
     <tr>
       <td>
@@ -517,6 +571,24 @@ function RoleRow({ name, roleId, effective, override, models, onChange }: RoleRo
       <td>
         <input
           type="number"
+          min={1000}
+          step={1000}
+          placeholder={
+            effective.contextTokens !== undefined
+              ? String(effective.contextTokens)
+              : String(defaultContextTokens)
+          }
+          value={override.contextTokens ?? ""}
+          onChange={(event) =>
+            onChange(roleId, {
+              contextTokens: event.target.value === "" ? undefined : Number(event.target.value),
+            })
+          }
+        />
+      </td>
+      <td>
+        <input
+          type="number"
           min={0}
           max={2}
           step={0.1}
@@ -530,7 +602,10 @@ function RoleRow({ name, roleId, effective, override, models, onChange }: RoleRo
         />
       </td>
       <td className="muted">
-        {effective.model} · {effective.maxSteps} steps
+        {effective.model} · {effective.maxSteps} steps ·{" "}
+        {effective.contextTokens !== undefined
+          ? `${effective.contextTokens} ctx`
+          : `${defaultContextTokens} ctx (global)`}
       </td>
     </tr>
   );

@@ -146,9 +146,6 @@ function rolesFromTools(request: CompletionRequest): string[] {
   return ["backend", "frontend"];
 }
 
-function isBoss(system: string): boolean {
-  return /Engineering Manager|the Boss/i.test(system);
-}
 /** Scripted plan that exercises the scheduler and a dependency edge. */
 export function planFromRoles(roles: readonly string[]): Plan {
   const has = (role: string): boolean => roles.includes(role);

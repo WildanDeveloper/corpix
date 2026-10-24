@@ -2,6 +2,7 @@ import path from "node:path";
 import {
   SettingsService,
   applyRoleOverrides,
+  capTeamSteps,
   createProviderFromSettings,
   envForRoles,
   loadTeam,
@@ -33,9 +34,16 @@ export function openRuntime(env: Env): RuntimeBundle {
 
 export async function buildRunContext(bundle: RuntimeBundle) {
   const runtime = bundle.service.load();
-  const team = applyRoleOverrides(
-    await loadTeam(path.join(findRepoRoot(), "config"), "team.default.yaml", envForRoles(bundle.env)),
-    runtime.settings.models,
+  const team = capTeamSteps(
+    applyRoleOverrides(
+      await loadTeam(
+        path.join(findRepoRoot(), "config"),
+        "team.default.yaml",
+        envForRoles(bundle.env),
+      ),
+      runtime.settings.models,
+    ),
+    runtime.settings.limits.maxStepsPerTask,
   );
   return {
     runtime,

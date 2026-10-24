@@ -7,11 +7,13 @@ export interface ProviderSettings {
   baseUrl: string;
   maxTokensParam: MaxTokensParam;
   requestTimeoutMs: number;
+  toolChoiceStyle: "auto" | "object" | "name" | "required" | "none";
 }
 
 export interface RoleOverride {
   model?: string;
   maxSteps?: number;
+  contextTokens?: number;
   temperature?: number;
 }
 
@@ -25,6 +27,7 @@ export interface ModelSettings {
 export interface LimitSettings {
   maxConcurrentAgents: number;
   maxStepsPerTask: number;
+  contextTokens: number;
   taskTimeoutMinutes: number;
   toolOutputMaxChars: number;
   maxOutputTokens: number;
@@ -64,6 +67,7 @@ export interface RoleSummary {
   title: string;
   model: string;
   maxSteps: number;
+  contextTokens?: number;
   temperature?: number;
   scope: { write: string[]; read: string[] };
 }

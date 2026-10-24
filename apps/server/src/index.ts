@@ -1,12 +1,15 @@
-import { existsSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import path from "node:path";
 import {
   Orchestrator,
   SettingsService,
   applyRoleOverrides,
+  approvalDecider,
+  capTeamSteps,
   createProviderFromSettings,
   envForRoles,
   loadTeam,
+  listModels,
   probeProvider,
   type ApprovalRequest,
 } from "@corpix/agents";
@@ -14,7 +17,9 @@ import {
   assertSafeBinding,
   findRepoRoot,
   maskSettings,
+  mergeSettings,
   newProjectId,
+  newRunId,
   parseEnv,
   resolveDataDir,
   SettingsPatchSchema,
@@ -30,7 +35,6 @@ import YAML from "yaml";
 interface ActiveRun {
   runId: string;
   controller: AbortController;
-  events: Array<{ seq: number; ts: string; runId: string; type: string; payload: unknown }>;
   clients: Set<WebSocket>;
   status: "running" | "paused" | "finished";
 }
@@ -48,7 +52,7 @@ const store = new SqliteStore(
 );
 const settingsService = new SettingsService(store, process.env, env);
 const active = new Map<string, ActiveRun>();
-const pendingApprovals = new Map<string, (approved: boolean) => void>();
+const pendingApprovals = new Map<string, { runId: string; resolve: (approved: boolean) => void }>();
 
 async function loadPricing(): Promise<Record<string, { input: number; output: number; cached_input?: number }>> {
   const file = path.join(configDir, "pricing.yaml");
@@ -66,10 +70,25 @@ const app = express();
 app.use(express.json({ limit: "1mb" }));
 
 const adminToken = env.ADMIN_TOKEN.trim();
+
+/** Constant-time-ish comparison so a token cannot be guessed byte by byte. */
+function tokenMatches(candidate: string): boolean {
+  if (adminToken.length === 0) return true;
+  if (candidate.length !== adminToken.length) return false;
+  let diff = 0;
+  for (let i = 0; i < candidate.length; i++) {
+    diff |= candidate.charCodeAt(i) ^ adminToken.charCodeAt(i);
+  }
+  return diff === 0;
+}
+
+function bearerOf(header: string | undefined): string {
+  if (!header) return "";
+  return header.startsWith("Bearer ") ? header.slice(7) : "";
+}
+
 app.use((req, res, next) => {
-  if (adminToken.length === 0) return next();
-  const header = req.headers.authorization ?? "";
-  if (header === `Bearer ${adminToken}`) return next();
+  if (tokenMatches(bearerOf(req.headers.authorization))) return next();
   res.status(401).json({ error: "unauthorized" });
 });
 
@@ -121,27 +140,39 @@ app.put("/api/settings/api-key", (req, res) => {
 });
 
 app.post("/api/settings/test", (req, res) => {
-  const body = req.body as { model?: unknown };
-  const runtime = settingsService.load();
+  const body = req.body as { model?: unknown; patch?: unknown };
+  const current = settingsService.load();
+  const parsed = SettingsPatchSchema.safeParse(body.patch ?? {});
+  const settings = parsed.success
+    ? mergeSettings(current.settings, parsed.data)
+    : current.settings;
   const model =
-    typeof body.model === "string" && body.model.length > 0 ? body.model : runtime.settings.models.boss;
-  void probeProvider(runtime, model).then((result) => res.json(result));
+    typeof body.model === "string" && body.model.length > 0
+      ? body.model
+      : settings.models.boss;
+  void probeProvider({ ...current, settings }, model).then((result) => res.json(result));
 });
 
-/** Model list for the settings dropdown. Falls back to the configured ids. */
+app.delete("/api/settings/api-key", (_req, res) => {
+  const runtime = settingsService.setApiKey("");
+  res.json(maskSettings(runtime));
+});
+
+/** Model list for the settings dropdown. Never spends tokens. */
 app.get("/api/models", (_req, res) => {
   void (async () => {
     const runtime = settingsService.load();
-    const probe = await probeProvider(runtime, runtime.settings.models.boss);
-    const models =
-      probe.models.length > 0
-        ? probe.models
-        : [
-            runtime.settings.models.boss,
-            runtime.settings.models.worker,
-            runtime.settings.models.cheap,
-          ];
-    res.json({ models, ok: probe.ok, detail: probe.ok ? undefined : probe.detail });
+    const result = await listModels(runtime);
+    const fallback = [
+      runtime.settings.models.boss,
+      runtime.settings.models.worker,
+      runtime.settings.models.cheap,
+    ].filter((model) => model.length > 0);
+    res.json({
+      models: result.models.length > 0 ? result.models : fallback,
+      ok: result.ok,
+      detail: result.detail,
+    });
   })();
 });
 
@@ -149,9 +180,12 @@ app.get("/api/models", (_req, res) => {
 app.get("/api/roles", (_req, res) => {
   void (async () => {
     const runtime = settingsService.load();
-    const team = applyRoleOverrides(
-      await loadTeam(configDir, "team.default.yaml", envForRoles(env)),
-      runtime.settings.models,
+    const team = capTeamSteps(
+      applyRoleOverrides(
+        await loadTeam(configDir, "team.default.yaml", envForRoles(env)),
+        runtime.settings.models,
+      ),
+      runtime.settings.limits.maxStepsPerTask,
     );
     res.json({
       boss: { role: team.boss.role, name: team.boss.name },
@@ -171,10 +205,22 @@ app.post("/api/projects", (req, res) => {
     res.status(400).json({ error: "name and repoPath are required" });
     return;
   }
+  const absolute = path.resolve(repoPath);
+  let stat;
+  try {
+    stat = statSync(absolute);
+  } catch {
+    res.status(400).json({ error: `repoPath does not exist: ${absolute}` });
+    return;
+  }
+  if (!stat.isDirectory()) {
+    res.status(400).json({ error: `repoPath is not a directory: ${absolute}` });
+    return;
+  }
   const project = {
     id: newProjectId(),
     name,
-    repoPath: path.resolve(repoPath),
+    repoPath: absolute,
     createdAt: new Date().toISOString(),
   };
   store.createProject(project);
@@ -187,16 +233,16 @@ app.post("/api/runs", (req, res) => {
     (error: unknown) => res.status(400).json({ error: (error as Error).message }),
   );
 });
-
 async function startRun(body: {
   projectId?: string;
   goal?: string;
   budgetUsd?: number;
 }): Promise<string> {
   if (!body.goal) throw new Error("goal is required");
-  const project = body.projectId ? store.getProject(body.projectId) : null;
-  if (body.projectId && !project) throw new Error(`Unknown project: ${body.projectId}`);
-  const workspacePath = project?.repoPath ?? process.cwd();
+  if (!body.projectId) throw new Error("projectId is required");
+  const project = store.getProject(body.projectId);
+  if (!project) throw new Error(`Unknown project: ${body.projectId}`);
+  const workspacePath = project.repoPath;
   if (!existsSync(workspacePath)) throw new Error(`Workspace not found: ${workspacePath}`);
 
   const runtime = settingsService.load();
@@ -205,11 +251,11 @@ async function startRun(body: {
   const controller = new AbortController();
 
   // Reserve the id up front so the client can subscribe immediately.
-  const runId = `run_${Date.now().toString(36)}`;
+  const runId = newRunId();
+  if (store.getRun(runId)) throw new Error(`Run id collision: ${runId}`);
   const record: ActiveRun = {
     runId,
     controller,
-    events: [],
     clients: new Set(),
     status: "running",
   };
@@ -229,11 +275,10 @@ async function startRun(body: {
     pricing,
     signal: controller.signal,
     limits: { reviewRounds: team.team.limits.reviewRounds },
-    approve: async (request: ApprovalRequest) => {
-      if (approvalMode === "auto") return true;
+    approve: approvalDecider(approvalMode, async (request) => {
       return await new Promise<boolean>((resolve) => {
         const approvalId = `ap_${Math.random().toString(36).slice(2, 10)}`;
-        pendingApprovals.set(approvalId, resolve);
+        pendingApprovals.set(approvalId, { runId, resolve });
         store.createApproval({
           id: approvalId,
           runId,
@@ -253,9 +298,8 @@ async function startRun(body: {
           summary: request.summary,
         });
       });
-    },
+    }),
     onEvent: (envelope) => {
-      record.events.push(envelope);
       broadcastEnvelope(runId, envelope);
     },
   });
@@ -267,11 +311,20 @@ async function startRun(body: {
     })
     .catch((error: unknown) => {
       record.status = "finished";
-      const envelope = store.appendEvent(runId, "error", {
-        message: (error as Error).message,
-        code: "run_error",
-      });
-      broadcastEnvelope(runId, envelope);
+      const code = (error as { code?: string }).code;
+      // Cancellation is a normal outcome, already recorded by the orchestrator.
+      if (code !== "cancelled") {
+        const envelope = store.appendEvent(runId, "error", {
+          message: (error as Error).message,
+          code: "run_error",
+        });
+        broadcastEnvelope(runId, envelope);
+      }
+    })
+    .finally(() => {
+      denyPendingApprovals(runId, "run ended");
+      // Late subscribers still get the full history from SQLite.
+      active.delete(runId);
     });
 
   return runId;
@@ -302,10 +355,25 @@ app.post("/api/runs/:id/cancel", (req, res) => {
     return;
   }
   record.controller.abort();
-  store.updateRun(req.params.id, { status: "cancelled" });
-  broadcast(req.params.id, "run.cancelled", { status: "cancelled" });
+  denyPendingApprovals(req.params.id, "run cancelled");
   res.json({ ok: true });
 });
+
+/** Resolve waiting approval promises so a cancelled run never hangs. */
+function denyPendingApprovals(runId: string, reason: string): void {
+  for (const [approvalId, entry] of pendingApprovals) {
+    if (entry.runId !== runId) continue;
+    pendingApprovals.delete(approvalId);
+    store.resolveApproval(approvalId, "denied");
+    const envelope = store.appendEvent(runId, "approval.resolved", {
+      approvalId,
+      decision: "denied",
+      reason,
+    });
+    broadcastEnvelope(runId, envelope);
+    entry.resolve(false);
+  }
+}
 
 app.get("/api/runs/:id/events", (req, res) => {
   const since = Number(req.query.since ?? 0);
@@ -334,15 +402,20 @@ app.get("/api/approvals", (req, res) => {
 app.post("/api/approvals/:id", (req, res) => {
   const { decision, remember } = req.body as { decision?: string; remember?: boolean };
   const approval = req.params.id;
-  const resolve = pendingApprovals.get(approval);
-  if (!resolve) {
+  const entry = pendingApprovals.get(approval);
+  if (!entry) {
     res.status(404).json({ error: "approval not found or already resolved" });
     return;
   }
   const approved = decision === "approve";
   pendingApprovals.delete(approval);
   store.resolveApproval(approval, approved ? "approved" : "denied");
-  resolve(approved);
+  const envelope = store.appendEvent(entry.runId, "approval.resolved", {
+    approvalId: approval,
+    decision: approved ? "approved" : "denied",
+  });
+  broadcastEnvelope(entry.runId, envelope);
+  entry.resolve(approved);
   res.json({ ok: true, remembered: Boolean(remember) });
 });
 
@@ -386,10 +459,31 @@ if (existsSync(webDist)) {
   process.stdout.write(`Serving the web UI from ${webDist}\n`);
 }
 
-const wss = new WebSocketServer({ server, path: "/ws" });
+const wss = new WebSocketServer({ noServer: true });
 
 wss.on("error", (error: Error) => {
   process.stderr.write(`WebSocket server error: ${error.message}\n`);
+});
+
+// Reject unauthorised upgrades during the handshake, before any WS frame is
+// exchanged. Browsers cannot set an Authorization header here, so the token may
+// also arrive as a query parameter.
+server.on("upgrade", (request, socket, head) => {
+  const url = new URL(request.url ?? "/ws", `http://${env.HOST}:${env.PORT}`);
+  if (url.pathname !== "/ws") {
+    socket.destroy();
+    return;
+  }
+  const token =
+    bearerOf(request.headers.authorization) || url.searchParams.get("token") || "";
+  if (!tokenMatches(token)) {
+    socket.write("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
+    socket.destroy();
+    return;
+  }
+  wss.handleUpgrade(request, socket, head, (ws) => {
+    wss.emit("connection", ws, request);
+  });
 });
 
 wss.on("connection", (socket, request) => {
@@ -411,16 +505,22 @@ wss.on("connection", (socket, request) => {
       return;
     }
     if (message.type === "approval.respond" && message.approvalId) {
-      const resolve = pendingApprovals.get(message.approvalId);
-      if (resolve) {
+      const entry = pendingApprovals.get(message.approvalId);
+      if (entry) {
         pendingApprovals.delete(message.approvalId);
         const approved = message.decision === "approve";
         store.resolveApproval(message.approvalId, approved ? "approved" : "denied");
-        resolve(approved);
+        const envelope = store.appendEvent(entry.runId, "approval.resolved", {
+          approvalId: message.approvalId,
+          decision: approved ? "approved" : "denied",
+        });
+        broadcastEnvelope(entry.runId, envelope);
+        entry.resolve(approved);
       }
     }
     if (message.type === "run.cancel") {
       active.get(runId)?.controller.abort();
+      denyPendingApprovals(runId, "run cancelled");
     }
   });
 

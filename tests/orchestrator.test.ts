@@ -155,8 +155,7 @@ describe("Orchestrator with the mock provider", () => {
     expect(sink.types()).toContain("run.paused");
   });
 
-  it("retries planning when the Boss submits an invalid plan", async () => {
-    const store = new MemoryStore();
+  it("retries planning when the Boss submits an invalid plan", async () => {    const store = new MemoryStore();
     let attempt = 0;
     const provider = new MockProvider({
       respond: (request) => {
@@ -227,5 +226,49 @@ describe("Orchestrator with the mock provider", () => {
     expect(usage.length).toBeGreaterThan(0);
     expect(usage.every((row) => row.usage.inputTokens > 0)).toBe(true);
     expect(store.getRun("run_usage")?.spentUsd).toBeGreaterThan(0);
+  });
+
+  it("marks the run failed when a task ends blocked", async () => {
+    const store = new MemoryStore();
+    // Every worker reports "blocked" instead of "done".
+    const provider = new MockProvider({
+      respond: (request) => {
+        const isBoss = request.tools.some((tool) => tool.name === "submit_plan");
+        if (isBoss) return undefined;
+        return {
+          content: [
+            {
+              type: "tool_call",
+              id: "r",
+              name: "submit_report",
+              input: {
+                status: "blocked",
+                summary: "cannot write outside my scope",
+                filesChanged: [],
+                commandsRun: [],
+                openIssues: ["out of scope"],
+              },
+            },
+          ],
+          stopReason: "tool_use",
+          usage: { inputTokens: 1, outputTokens: 1 },
+        };
+      },
+    });
+
+    const orchestrator = new Orchestrator({
+      store,
+      provider,
+      team,
+      workspacePath: workspace,
+      projectId: "test",
+      runId: "run_blocked",
+      approvalMode: "auto",
+    });
+
+    const outcome = await orchestrator.run("Do something impossible");
+    expect(outcome.status).toBe("failed");
+    expect(outcome.tasks.every((task) => task.status !== "done")).toBe(true);
+    expect(store.getRun("run_blocked")?.status).toBe("failed");
   });
 });

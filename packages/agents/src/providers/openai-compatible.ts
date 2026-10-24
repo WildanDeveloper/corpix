@@ -7,10 +7,19 @@ import {
 } from "@corpix/shared";
 import type { CompletionRequest, CompletionResponse, LLMProvider } from "./types";
 
+export type ToolChoiceStyle = "auto" | "object" | "name" | "required" | "none";
+
 export interface OpenAICompatibleOptions {
   baseUrl: string;
   apiKey?: string;
   maxTokensParam?: "max_tokens" | "max_completion_tokens";
+  /**
+   * How to send a forced tool. `auto` tries the standard object, then the
+   * function-name string, then "required", then no tool_choice at all, and
+   * remembers what worked. Some OpenAI-compatible servers reject the object
+   * form with a 400.
+   */
+  toolChoiceStyle?: ToolChoiceStyle;
   /** Per-request timeout; the caller's AbortSignal still wins. */
   timeoutMs?: number;
   /** Injected for tests; defaults to global fetch. */
@@ -59,6 +68,8 @@ export class OpenAICompatibleProvider implements LLMProvider {
   private readonly maxTokensParam: "max_tokens" | "max_completion_tokens";
   private readonly fetchImpl: typeof fetch;
   private readonly timeoutMs: number;
+  private readonly requestedStyle: ToolChoiceStyle;
+  private learnedStyle: Exclude<ToolChoiceStyle, "auto"> | null = null;
 
   constructor(options: OpenAICompatibleOptions) {
     this.baseUrl = options.baseUrl.replace(/\/+$/, "");
@@ -66,9 +77,33 @@ export class OpenAICompatibleProvider implements LLMProvider {
     this.maxTokensParam = options.maxTokensParam ?? "max_tokens";
     this.fetchImpl = options.fetch ?? globalThis.fetch;
     this.timeoutMs = options.timeoutMs ?? 120_000;
+    this.requestedStyle = options.toolChoiceStyle ?? "auto";
   }
 
-  async complete(request: CompletionRequest): Promise<CompletionResponse> {    const body: Record<string, unknown> = {
+  /** Styles to try, in order. A learned style goes first. */
+  private stylesToTry(): Exclude<ToolChoiceStyle, "auto">[] {
+    if (this.requestedStyle !== "auto") return [this.requestedStyle];
+    const all: Exclude<ToolChoiceStyle, "auto">[] = ["object", "name", "required", "none"];
+    return this.learnedStyle
+      ? [this.learnedStyle, ...all.filter((style) => style !== this.learnedStyle)]
+      : all;
+  }
+
+  private toolChoiceFor(style: Exclude<ToolChoiceStyle, "auto">, name: string): unknown {
+    switch (style) {
+      case "object":
+        return { type: "function", function: { name } };
+      case "name":
+        return name;
+      case "required":
+        return "required";
+      case "none":
+        return undefined;
+    }
+  }
+
+  async complete(request: CompletionRequest): Promise<CompletionResponse> {
+    const body: Record<string, unknown> = {
       model: request.model,
       messages: toChatMessages(request.system, request.messages),
       tools: request.tools.map((tool) => ({
@@ -82,45 +117,82 @@ export class OpenAICompatibleProvider implements LLMProvider {
       [this.maxTokensParam]: request.maxTokens,
     };
     if (request.tools.length === 0) delete body.tools;
-    if (request.toolChoice) {
-      body.tool_choice = {
-        type: "function",
-        function: { name: request.toolChoice.name },
-      };
-    }
     if (request.temperature !== undefined) body.temperature = request.temperature;
 
-    let response: Response;
     const timeout = AbortSignal.timeout(this.timeoutMs);
     const signal = request.signal ? AbortSignal.any([request.signal, timeout]) : timeout;
-    try {
-      response = await this.fetchImpl(`${this.baseUrl}/chat/completions`, {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          authorization: `Bearer ${this.apiKey}`,
-        },
-        body: JSON.stringify(body),
-        signal,
-      });
-    } catch (error) {
-      const aborted = (error as Error).name === "TimeoutError" || (error as Error).name === "AbortError";
-      throw new ProviderError(
-        aborted
-          ? `Provider request timed out after ${this.timeoutMs}ms`
-          : `Network error calling provider: ${(error as Error).message}`,
-      );
+
+    const styles: Array<Exclude<ToolChoiceStyle, "auto"> | null> = request.toolChoice
+      ? this.stylesToTry()
+      : [null];
+
+    let lastError: ProviderError | null = null;
+    for (const style of styles) {
+      const attemptBody = { ...body };
+      if (style !== null && request.toolChoice) {
+        const choice = this.toolChoiceFor(style, request.toolChoice.name);
+        if (choice === undefined) delete attemptBody.tool_choice;
+        else attemptBody.tool_choice = choice;
+      }
+
+      let response: Response;
+      try {
+        response = await this.fetchImpl(`${this.baseUrl}/chat/completions`, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            authorization: `Bearer ${this.apiKey}`,
+          },
+          body: JSON.stringify(attemptBody),
+          signal,
+        });
+      } catch (error) {
+        const aborted =
+          (error as Error).name === "TimeoutError" || (error as Error).name === "AbortError";
+        throw new ProviderError(
+          aborted
+            ? `Provider request timed out after ${this.timeoutMs}ms`
+            : `Network error calling provider: ${(error as Error).message}`,
+        );
+      }
+
+      if (!response.ok) {
+        const text = await response.text().catch(() => "");
+        const error = new ProviderError(
+          `Provider returned ${response.status}: ${text.slice(0, 500)}`,
+          response.status,
+        );
+        lastError = error;
+        // Some OpenAI-compatible servers reject the object form of tool_choice.
+        // Retry with the next style only when the error clearly points at it.
+        const aboutToolChoice = /tool[_ ]?choice/i.test(text);
+        if (style !== null && aboutToolChoice) {
+          if (this.requestedStyle === "auto") this.learnedStyle = null;
+          continue;
+        }
+        // A wrong model id is a configuration mistake, so say which model and
+        // point at the settings instead of surfacing a raw provider blob.
+        if (response.status === 404 || /model .*not found|unknown model|invalid model/i.test(text)) {
+          throw new ProviderError(
+            `The provider does not know the model "${request.model}". ` +
+              `Pick one from GET /api/models (Settings → Models) and try again. ` +
+              `Provider said: ${text.slice(0, 200)}`,
+            response.status,
+          );
+        }
+        throw error;
+      }
+
+      if (style !== null && this.requestedStyle === "auto") {
+        this.learnedStyle = style;
+      }
+      return this.parseResponse((await response.json()) as ChatCompletionResponse);
     }
 
-    if (!response.ok) {
-      const text = await response.text().catch(() => "");
-      throw new ProviderError(
-        `Provider returned ${response.status}: ${text.slice(0, 500)}`,
-        response.status,
-      );
-    }
+    throw lastError ?? new ProviderError("Provider request failed");
+  }
 
-    const data = (await response.json()) as ChatCompletionResponse;
+  private parseResponse(data: ChatCompletionResponse): CompletionResponse {
     const choice = data.choices?.[0];
     if (!choice) throw new ProviderError("Provider returned no choices");
 

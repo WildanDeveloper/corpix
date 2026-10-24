@@ -62,6 +62,20 @@ code {
   background: var(--panel);
 }
 
+.tabs .token {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.tabs .token input {
+  width: 150px;
+  padding: 4px 8px;
+}
+
 button {
   background: #21262d;
   color: var(--text);

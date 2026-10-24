@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState, type ReactElement } from "react";
-import { api, formatUsd, wsUrl } from "./api";
+import { useEffect, useMemo, useRef, useState, type ReactElement } from "react";
+import { api, formatUsd, getToken, setToken, wsUrl } from "./api";
 import { SettingsPanel } from "./SettingsPanel";
 import type { ApprovalRow, Project, RunEvent, RunRecord, UsageResponse } from "./types";
 
@@ -7,6 +7,8 @@ type Tab = "office" | "settings";
 
 export function App(): ReactElement {
   const [tab, setTab] = useState<Tab>("office");
+  const [token, setTokenState] = useState(getToken());
+
   return (
     <div className="app">
       <nav className="tabs">
@@ -17,6 +19,18 @@ export function App(): ReactElement {
         <button className={tab === "settings" ? "active" : ""} onClick={() => setTab("settings")}>
           Settings
         </button>
+        <label className="token" title="Required only when ADMIN_TOKEN is set on the server">
+          Admin token
+          <input
+            type="password"
+            value={token}
+            placeholder="optional"
+            onChange={(event) => {
+              setTokenState(event.target.value);
+              setToken(event.target.value);
+            }}
+          />
+        </label>
       </nav>
       <main>{tab === "settings" ? <SettingsPanel /> : <OfficePanel />}</main>
     </div>
@@ -33,39 +47,87 @@ function OfficePanel(): ReactElement {
   const [approvals, setApprovals] = useState<ApprovalRow[]>([]);
   const [runs, setRuns] = useState<RunRecord[]>([]);
   const [error, setError] = useState("");
+  const [newProject, setNewProject] = useState({ name: "", repoPath: "" });
+  const lastSeq = useRef(0);
+
+  // Refreshing is used after a run finishes and after registering a project.
+  const refresh = async (): Promise<void> => {
+    const [projectList, runList] = await Promise.all([
+      api<Project[]>("/api/projects"),
+      api<RunRecord[]>("/api/runs"),
+    ]);
+    setProjects(projectList);
+    setRuns(runList);
+    if (projectList[0] && !projectId) setProjectId(projectList[0].id);
+  };
 
   useEffect(() => {
-    void (async () => {
-      const [projectList, runList] = await Promise.all([
-        api<Project[]>("/api/projects"),
-        api<RunRecord[]>("/api/runs"),
-      ]);
-      setProjects(projectList);
-      setRuns(runList);
-      if (projectList[0]) setProjectId(projectList[0].id);
-    })().catch((err: Error) => setError(err.message));
+    void refresh().catch((err: Error) => setError(err.message));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Live events with `since` resume and a simple reconnect loop.
   useEffect(() => {
     if (!runId) return;
-    const socket = new WebSocket(wsUrl(`/ws?runId=${runId}`));
-    socket.onmessage = (message) => {
-      const event = JSON.parse(String(message.data)) as RunEvent;
-      setEvents((current) => [...current.filter((item) => item.seq !== event.seq), event]);
-      if (event.type === "usage.updated") {
-        void api<UsageResponse>(`/api/usage?runId=${runId}`).then(setUsage).catch(() => undefined);
-      }
-      if (event.type === "approval.requested") {
-        void api<ApprovalRow[]>(`/api/approvals?runId=${runId}&status=pending`).then(setApprovals).catch(() => undefined);
-      }
+    let socket: WebSocket | null = null;
+    let closed = false;
+    let retry: ReturnType<typeof setTimeout> | null = null;
+
+    const connect = (): void => {
+      socket = new WebSocket(wsUrl(`/ws?runId=${runId}&since=${lastSeq.current}`));
+      socket.onmessage = (message) => {
+        const event = JSON.parse(String(message.data)) as RunEvent;
+        if (event.seq <= lastSeq.current) return;
+        lastSeq.current = event.seq;
+        setEvents((current) => [...current, event].slice(-500));
+        if (event.type === "usage.updated") {
+          void api<UsageResponse>(`/api/usage?runId=${runId}`).then(setUsage).catch(() => undefined);
+        }
+        if (event.type === "approval.requested") {
+          void api<ApprovalRow[]>(`/api/approvals?runId=${runId}&status=pending`)
+            .then(setApprovals)
+            .catch(() => undefined);
+        }
+        if (event.type === "run.finished" || event.type === "run.failed" || event.type === "run.paused") {
+          void refresh().catch(() => undefined);
+        }
+      };
+      socket.onclose = () => {
+        if (closed) return;
+        retry = setTimeout(connect, 1200);
+      };
+      socket.onerror = () => socket?.close();
     };
-    return () => socket.close();
+
+    connect();
+    return () => {
+      closed = true;
+      if (retry) clearTimeout(retry);
+      socket?.close();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [runId]);
+
+  const registerProject = async (): Promise<void> => {
+    setError("");
+    try {
+      const project = await api<Project>("/api/projects", {
+        method: "POST",
+        body: JSON.stringify(newProject),
+      });
+      setNewProject({ name: "", repoPath: "" });
+      setProjectId(project.id);
+      await refresh();
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  };
 
   const dispatch = async (): Promise<void> => {
     setError("");
     setEvents([]);
     setUsage(null);
+    lastSeq.current = 0;
     try {
       const result = await api<{ runId: string }>("/api/runs", {
         method: "POST",
@@ -83,6 +145,13 @@ function OfficePanel(): ReactElement {
       body: JSON.stringify({ decision }),
     });
     setApprovals((current) => current.filter((row) => row.id !== approvalId));
+  };
+
+  const cancel = async (): Promise<void> => {
+    if (!runId) return;
+    await api(`/api/runs/${runId}/cancel`, { method: "POST" }).catch((err: Error) =>
+      setError(err.message),
+    );
   };
 
   const spent = useMemo(() => usage?.totalUsd ?? 0, [usage]);
@@ -114,12 +183,34 @@ function OfficePanel(): ReactElement {
           <button className="primary" onClick={() => void dispatch()} disabled={goal.length === 0}>
             Dispatch
           </button>
+          {runId && (
+            <button onClick={() => void cancel()}>Cancel</button>
+          )}
         </div>
         {error.length > 0 && <p className="status error">{error}</p>}
+
         {projects.length === 0 && (
-          <p className="muted">
-            No projects yet. Register one with <code>POST /api/projects</code> or add a form here.
-          </p>
+          <fieldset>
+            <legend>Register your first project</legend>
+            <div className="row">
+              <input
+                placeholder="Name"
+                value={newProject.name}
+                onChange={(event) => setNewProject({ ...newProject, name: event.target.value })}
+              />
+              <input
+                placeholder="/absolute/path/to/repo"
+                value={newProject.repoPath}
+                onChange={(event) => setNewProject({ ...newProject, repoPath: event.target.value })}
+              />
+              <button
+                onClick={() => void registerProject()}
+                disabled={newProject.name === "" || newProject.repoPath === ""}
+              >
+                Register
+              </button>
+            </div>
+          </fieldset>
         )}
       </section>
 

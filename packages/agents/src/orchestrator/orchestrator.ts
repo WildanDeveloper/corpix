@@ -2,6 +2,7 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import {
   BudgetExceededError,
+  CancelledError,
   DEFAULT_LIMITS,
   validatePlan,
   newAgentId,
@@ -19,7 +20,8 @@ import {
 } from "@corpix/shared";
 import type { LLMProvider } from "../providers/types";
 import { renderPrompt, type LoadedTeam } from "../roles/loader";
-import { applyRoleOverrides } from "../config/settings-service";
+import { applyRoleOverrides, capTeamSteps } from "../config/settings-service";
+import { ContextManager } from "../runtime/context";
 import type { AgentRunResult } from "../runtime/agent-loop";
 import { runAgent, type AgentRuntime, type TaskBrief } from "../runtime/agent-loop";
 import { BudgetGuard } from "../runtime/budget";
@@ -48,11 +50,15 @@ export interface OrchestratorOptions {
     maxStepsPerTask?: number;
     toolOutputMaxChars?: number;
     taskTimeoutMinutes?: number;
+    commandTimeoutMs?: number;
+    contextTokens?: number;
     maxOutputTokens?: number;
     reviewRounds?: number;
     planAttempts?: number;
   };
   approve?: ApprovalDecider;
+  /** Optional cheap summariser used when an agent's context is compacted. */
+  summariser?: (text: string) => Promise<string>;
   /** Receives every persisted event, in `seq` order. */
   onEvent?: (event: EventEnvelope) => void;
   signal?: AbortSignal;
@@ -94,9 +100,6 @@ export class Orchestrator {
   constructor(private readonly options: OrchestratorOptions) {
     this.store = options.store;
     this.provider = options.provider;
-    this.team = options.runtime
-      ? applyRoleOverrides(options.team, options.runtime.settings.models)
-      : options.team;
     this.workspacePath = options.workspacePath;
     this.projectId = options.projectId;
     this.company = options.company ?? "Corpix";
@@ -120,6 +123,11 @@ export class Orchestrator {
         options.limits?.taskTimeoutMinutes ??
         settingsLimits?.taskTimeoutMinutes ??
         DEFAULT_LIMITS.taskTimeoutMinutes,
+      commandTimeoutMs: options.limits?.commandTimeoutMs ?? 120_000,
+      contextTokens:
+        options.limits?.contextTokens ??
+        settingsLimits?.contextTokens ??
+        DEFAULT_LIMITS.contextTokens,
       maxOutputTokens:
         options.limits?.maxOutputTokens ??
         settingsLimits?.maxOutputTokens ??
@@ -130,6 +138,12 @@ export class Orchestrator {
     this.pricing = options.pricing ?? options.runtime?.settings.pricing ?? {};
     this.defaultBudgetUsd =
       options.budgetUsd ?? settingsLimits?.budgetUsdPerGoal ?? DEFAULT_LIMITS.budgetUsdPerGoal;
+    this.team = options.runtime
+      ? capTeamSteps(
+          applyRoleOverrides(options.team, options.runtime.settings.models),
+          this.limits.maxStepsPerTask,
+        )
+      : options.team;
     this.log = options.log ?? (() => undefined);
   }
 
@@ -222,11 +236,10 @@ export class Orchestrator {
       const finished = await this.execute(runId, tasks, planByTaskId);
       const summary = summarise(goal, finished);
       const paused = this.budget.isPaused || this.budget.isStopped;
-      const status: RunStatus = paused
-        ? "paused"
-        : finished.some((task) => task.status === "failed")
-          ? "failed"
-          : "completed";
+      // A blocked task means the goal was not achieved, so the run is not
+      // "completed" just because nothing crashed.
+      const allDone = finished.every((task) => task.status === "done");
+      const status: RunStatus = paused ? "paused" : allDone ? "completed" : "failed";
 
       this.store.updateRun(runId, {
         status,
@@ -243,7 +256,7 @@ export class Orchestrator {
           tasks: {
             total: finished.length,
             done: finished.filter((task) => task.status === "done").length,
-            failed: finished.filter((task) => task.status === "failed").length,
+            failed: finished.filter((task) => task.status !== "done").length,
           },
         },
       });
@@ -256,14 +269,28 @@ export class Orchestrator {
         tasks: finished,
       };
     } catch (error) {
-      const message = (error as Error).message;
+      const cancelled = error instanceof CancelledError;
+      const status: RunStatus = cancelled ? "cancelled" : "failed";
+      const message = cancelled ? "Run cancelled" : (error as Error).message;
       this.store.updateRun(runId, {
-        status: "failed",
+        status,
         summary: message,
         finishedAt: new Date().toISOString(),
         spentUsd: this.budget.spentUsd,
       });
-      this.emit({ type: "run.failed", payload: { status: "failed", summary: message } });
+      this.emit({
+        type: cancelled ? "run.cancelled" : "run.failed",
+        payload: { status, summary: message, spentUsd: this.budget.spentUsd },
+      });
+      if (cancelled) {
+        return {
+          runId,
+          status,
+          summary: message,
+          spentUsd: this.budget.spentUsd,
+          tasks: this.store.listTasks(runId),
+        };
+      }
       throw error;
     }
   }
@@ -301,7 +328,15 @@ export class Orchestrator {
           `Workspace: ${this.workspacePath}`,
           `Roles available: ${this.roleIds().join(", ")}`,
           "",
+          "Write scopes (a role can only write inside its own list):",
+          ...this.team.workers.map(
+            (worker) =>
+              `- ${worker.role.id}: ${worker.role.scope.write.join(", ") || "(no write scope)"}`,
+          ),
+          "",
           "Write SPEC.md and NOTES.md, then call submit_plan.",
+          "Assign each task to a role that is allowed to write the files it needs.",
+          "If the goal needs a file outside every scope, say so in the plan summary instead of assigning an impossible task.",
           lastErrors.length > 0
             ? `Your previous plan was rejected:\n- ${lastErrors.join("\n- ")}\nFix these issues.`
             : "",
@@ -461,14 +496,23 @@ export class Orchestrator {
           .catch((error: unknown) => {
             failed.add(task.id);
             const paused = error instanceof BudgetExceededError;
+            const message = (error as Error).message;
+            const report: Report = {
+              status: "failed",
+              summary: message,
+              filesChanged: [],
+              commandsRun: [],
+              openIssues: [message],
+            };
             this.store.updateTask(task.id, {
               status: paused ? "blocked" : "failed",
+              report,
               finishedAt: new Date().toISOString(),
             });
             this.emit({
               type: "error",
               payload: {
-                message: (error as Error).message,
+                message,
                 code: paused ? "budget_exceeded" : "task_error",
                 taskId: task.id,
               },
@@ -587,9 +631,9 @@ export class Orchestrator {
         budget: this.budget,
         jail,
         limits: {
-          maxSteps: Math.min(agent.role.maxSteps, this.limits.maxStepsPerTask),
+          maxSteps: agent.role.maxSteps,
           toolOutputMaxChars: this.limits.toolOutputMaxChars,
-          commandTimeoutMs: 120_000,
+          commandTimeoutMs: this.limits.commandTimeoutMs,
           maxOutputTokens: this.limits.maxOutputTokens,
         },
         emit: (event) => this.emit(event),
@@ -610,6 +654,12 @@ export class Orchestrator {
             content: message.content,
           });
         },
+        // Each agent gets its own ContextManager sized by its role. Budgets are
+        // never shared between agents in the same run.
+        context: new ContextManager({
+          maxTokens: agent.role.contextTokens ?? this.limits.contextTokens,
+          summarise: this.options.summariser,
+        }),
         sharedContext: SHARED_CONTEXT,
         roleIds: this.roleIds(),
         toolChoice,
@@ -637,19 +687,24 @@ export class Orchestrator {
     }
   }
 
-  /** Commands go through the policy, then run with a scrubbed environment. */
+  /**
+   * Commands go through the policy, then run with a scrubbed environment. The
+   * child gets its own process group so a timeout or a cancelled run kills the
+   * whole tree, not just the direct child.
+   */
   private async execCommand(
     role: Role,
     command: string,
     args: string[],
   ): Promise<CommandOutcome> {
+    const printable = [command, ...args].join(" ");
     const decision = checkCommand(command, args, {
       allow: role.commands.allow,
       deny: role.commands.deny,
     });
     if (!decision.allowed) {
       return {
-        command: [command, ...args].join(" "),
+        command: printable,
         exitCode: 126,
         stdout: "",
         stderr: `POLICY: ${decision.reason ?? "command denied"}`,
@@ -660,21 +715,57 @@ export class Orchestrator {
     if (!jail) throw new Error("Workspace is not initialised");
 
     const { spawn } = await import("node:child_process");
+    const timeoutMs = this.limits.commandTimeoutMs;
+    const outer = this.options.signal;
+
     return await new Promise<CommandOutcome>((resolve) => {
       const child = spawn(command, args, {
         cwd: jail.root,
         env: scrubbedEnv(),
         shell: false,
         stdio: ["ignore", "pipe", "pipe"],
+        // New process group, so kill(-pid) reaches grandchildren too.
+        detached: true,
       });
+
       let stdout = "";
       let stderr = "";
       let timedOut = false;
+      let settled = false;
       const cap = 200_000;
+
+      const killTree = (signal: NodeJS.Signals): void => {
+        try {
+          if (child.pid !== undefined) process.kill(-child.pid, signal);
+        } catch {
+          try {
+            child.kill(signal);
+          } catch {
+            // already gone
+          }
+        }
+      };
+
+      const finish = (exitCode: number): void => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        outer?.removeEventListener("abort", onAbort);
+        resolve({ command: printable, exitCode, stdout, stderr, timedOut });
+      };
+
       const timer = setTimeout(() => {
         timedOut = true;
-        child.kill("SIGKILL");
-      }, 120_000);
+        killTree("SIGKILL");
+        // Do not wait forever for a wedged process.
+        setTimeout(() => finish(124), 2_000);
+      }, timeoutMs);
+
+      const onAbort = (): void => {
+        killTree("SIGKILL");
+        finish(130);
+      };
+      outer?.addEventListener("abort", onAbort, { once: true });
 
       child.stdout.on("data", (chunk: Buffer) => {
         if (stdout.length < cap) stdout += chunk.toString();
@@ -683,24 +774,11 @@ export class Orchestrator {
         if (stderr.length < cap) stderr += chunk.toString();
       });
       child.on("error", (error) => {
-        clearTimeout(timer);
-        resolve({
-          command: [command, ...args].join(" "),
-          exitCode: 127,
-          stdout,
-          stderr: `${stderr}\n${error.message}`,
-          timedOut,
-        });
+        stderr += `\n${error.message}`;
+        finish(127);
       });
       child.on("close", (code) => {
-        clearTimeout(timer);
-        resolve({
-          command: [command, ...args].join(" "),
-          exitCode: code ?? -1,
-          stdout,
-          stderr,
-          timedOut,
-        });
+        finish(timedOut ? 124 : (code ?? -1));
       });
     });
   }

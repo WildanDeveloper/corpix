@@ -326,9 +326,17 @@ export async function runAgent(
     messages.push(resultMessage);
     options.onMessage?.(resultMessage, step);
 
-    if (loop === "nudge") {
+    const failureStreak = loopDetector.observeResults(results);
+    if (failureStreak === "fail") {
+      setState("error");
+      throw new StepLimitError(agent.id, task.id, step);
+    }
+
+    if (loop === "nudge" || failureStreak === "nudge") {
       const nudge = userText(
-        "You are repeating the same tool call. Stop, re-read the last result, and try a different approach.",
+        loop === "nudge"
+          ? "You are repeating the same tool call. Stop, re-read the last result, and try a different approach."
+          : "Your last few tool calls all failed. Re-read the errors, check the exact paths and command names, and change your approach. If you cannot proceed, call submit_report with status blocked and explain why.",
       );
       messages.push(nudge);
       options.onMessage?.(nudge, step);

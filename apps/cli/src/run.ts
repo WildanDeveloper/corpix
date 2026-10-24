@@ -3,10 +3,10 @@ import path from "node:path";
 import {
   Orchestrator,
   applyRoleOverrides,
+  approvalDecider,
   createProviderFromSettings,
   envForRoles,
   loadTeam,
-  type ApprovalRequest,
 } from "@corpix/agents";
 import { assertSafeBinding, findRepoRoot, maskSettings, type Env } from "@corpix/shared";
 import { createInterface } from "node:readline/promises";
@@ -52,17 +52,12 @@ export async function runGoal(options: CliOptions, env: Env): Promise<number> {
   const rl = createInterface({ input: stdin, output: stdout });
   const approvalMode = options.approval ?? runtime.settings.safety.approvalMode;
 
-  const approve = async (request: ApprovalRequest): Promise<boolean> => {
-    if (approvalMode === "auto") return true;
-    if (approvalMode === "auto-safe" && request.risk === "exec") {
-      // Allowlist checks already happened; ask for installs only.
-      if (!/install|add|update|upgrade/.test(request.summary)) return true;
-    }
+  const approve = approvalDecider(approvalMode, async (request) => {
     const answer = await rl.question(
       `\n[approval] ${request.agentId} wants to run: ${request.summary}\nApprove? [y/N] `,
     );
     return /^y(es)?$/i.test(answer.trim());
-  };
+  });
 
   const orchestrator = new Orchestrator({
     store: bundle.store,
@@ -102,7 +97,6 @@ export async function runGoal(options: CliOptions, env: Env): Promise<number> {
 }
 
 export { maskSettings };
-
 function summariseEvent(type: string, payload: Record<string, unknown>): string {
   if (type === "tool.called") return `${payload.agentId} -> ${payload.tool}`;
   if (type === "task.started") return `${payload.role}: ${payload.title}`;
