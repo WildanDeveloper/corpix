@@ -6,16 +6,25 @@ import {
   loadTeam,
   probeProvider,
 } from "@corpix/agents";
-import { maskSettings, parseEnv, type SettingsPatch } from "@corpix/shared";
+import {
+  findRepoRoot,
+  maskSettings,
+  parseEnv,
+  resolveDataDir,
+  type SettingsPatch,
+} from "@corpix/shared";
 import { openMigrated, SqliteStore } from "@corpix/server/db";
-import "dotenv/config";
+import { config as loadDotenv } from "dotenv";
 import { runGoal, loadPricing } from "./run";
+
+const repoRoot = findRepoRoot();
+loadDotenv({ path: path.join(repoRoot, ".env") });
 
 const [, , command, ...rest] = process.argv;
 
 async function main(): Promise<number> {
   const env = parseEnv(process.env);
-  const configDir = path.join(process.cwd(), "config");
+  const configDir = path.join(repoRoot, "config");
 
   switch (command) {
     case "run":
@@ -44,9 +53,10 @@ async function main(): Promise<number> {
 }
 
 function openStore(env: ReturnType<typeof parseEnv>): SqliteStore {
+  const dataDir = resolveDataDir(env.DATA_DIR, repoRoot);
   return new SqliteStore(
-    openMigrated(path.join(env.DATA_DIR, "corpix.sqlite")),
-    path.join(env.DATA_DIR, "secrets.json"),
+    openMigrated(path.join(dataDir, "corpix.sqlite")),
+    path.join(dataDir, "secrets.json"),
   );
 }
 
@@ -241,7 +251,7 @@ function coerce(raw: string): unknown {
 
 function migrate(env: ReturnType<typeof parseEnv>): number {
   const store = openStore(env);
-  process.stdout.write(`Migrated ${path.join(env.DATA_DIR, "corpix.sqlite")}\n`);
+  process.stdout.write(`Migrated ${path.join(resolveDataDir(env.DATA_DIR, repoRoot), "corpix.sqlite")}\n`);
   store.close();
   return 0;
 }

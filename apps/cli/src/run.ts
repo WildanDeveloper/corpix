@@ -8,7 +8,7 @@ import {
   loadTeam,
   type ApprovalRequest,
 } from "@corpix/agents";
-import { assertSafeBinding, maskSettings, type Env } from "@corpix/shared";
+import { assertSafeBinding, findRepoRoot, maskSettings, type Env } from "@corpix/shared";
 import { createInterface } from "node:readline/promises";
 import { stdin, stdout } from "node:process";
 import "dotenv/config";
@@ -38,7 +38,7 @@ export async function loadPricing(configDir: string): Promise<Record<string, { i
 
 export async function runGoal(options: CliOptions, env: Env): Promise<number> {
   assertSafeBinding(env);
-  const configDir = options.configDir ?? path.join(process.cwd(), "config");
+  const configDir = options.configDir ?? path.join(findRepoRoot(), "config");
   const bundle = openRuntime(env);
   const runtime = bundle.service.load();
   const team = applyRoleOverrides(

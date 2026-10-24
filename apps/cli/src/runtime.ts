@@ -6,9 +6,8 @@ import {
   envForRoles,
   loadTeam,
 } from "@corpix/agents";
-import type { Env } from "@corpix/shared";
+import { findRepoRoot, resolveDataDir, type Env } from "@corpix/shared";
 import { openMigrated, SqliteStore } from "@corpix/server/db";
-import "dotenv/config";
 
 export interface RuntimeBundle {
   service: SettingsService;
@@ -18,9 +17,11 @@ export interface RuntimeBundle {
 }
 
 export function openRuntime(env: Env): RuntimeBundle {
+  const root = findRepoRoot();
+  const dataDir = resolveDataDir(env.DATA_DIR, root);
   const store = new SqliteStore(
-    openMigrated(path.join(env.DATA_DIR, "corpix.sqlite")),
-    path.join(env.DATA_DIR, "secrets.json"),
+    openMigrated(path.join(dataDir, "corpix.sqlite")),
+    path.join(dataDir, "secrets.json"),
   );
   return {
     service: new SettingsService(store, process.env, env),
@@ -33,7 +34,7 @@ export function openRuntime(env: Env): RuntimeBundle {
 export async function buildRunContext(bundle: RuntimeBundle) {
   const runtime = bundle.service.load();
   const team = applyRoleOverrides(
-    await loadTeam(path.resolve("config"), "team.default.yaml", envForRoles(bundle.env)),
+    await loadTeam(path.join(findRepoRoot(), "config"), "team.default.yaml", envForRoles(bundle.env)),
     runtime.settings.models,
   );
   return {

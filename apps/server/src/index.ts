@@ -12,16 +12,18 @@ import {
 } from "@corpix/agents";
 import {
   assertSafeBinding,
+  findRepoRoot,
   maskSettings,
   newProjectId,
   parseEnv,
+  resolveDataDir,
   SettingsPatchSchema,
   type Env,
 } from "@corpix/shared";
 import { openMigrated, SqliteStore } from "@corpix/server/db";
 import express from "express";
 import { WebSocketServer, type WebSocket } from "ws";
-import "dotenv/config";
+import { config as loadDotenv } from "dotenv";
 import { readFile } from "node:fs/promises";
 import YAML from "yaml";
 
@@ -33,13 +35,16 @@ interface ActiveRun {
   status: "running" | "paused" | "finished";
 }
 
+const repoRoot = findRepoRoot();
+loadDotenv({ path: path.join(repoRoot, ".env") });
 const env = parseEnv(process.env);
 assertSafeBinding(env);
 
-const configDir = path.join(process.cwd(), "config");
+const configDir = path.join(repoRoot, "config");
+const dataDir = resolveDataDir(env.DATA_DIR, repoRoot);
 const store = new SqliteStore(
-  openMigrated(path.join(env.DATA_DIR, "corpix.sqlite")),
-  path.join(env.DATA_DIR, "secrets.json"),
+  openMigrated(path.join(dataDir, "corpix.sqlite")),
+  path.join(dataDir, "secrets.json"),
 );
 const settingsService = new SettingsService(store, process.env, env);
 const active = new Map<string, ActiveRun>();
@@ -361,7 +366,7 @@ const server = app.listen(env.PORT, env.HOST, () => {
 });
 
 // Serve the built web app when it exists, so one URL is enough.
-const webDist = path.join(process.cwd(), "apps", "web", "dist");
+const webDist = path.join(repoRoot, "apps", "web", "dist");
 if (existsSync(webDist)) {
   app.use(express.static(webDist));
   app.get(/^(?!\/api|\/ws).*/, (_req, res) => {
