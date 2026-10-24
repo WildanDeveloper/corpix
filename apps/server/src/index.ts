@@ -365,6 +365,17 @@ const server = app.listen(env.PORT, env.HOST, () => {
   process.stdout.write(`Corpix server on http://${env.HOST}:${env.PORT} (provider: ${env.LLM_PROVIDER})\n`);
 });
 
+server.on("error", (error: NodeJS.ErrnoException) => {
+  if (error.code === "EADDRINUSE") {
+    process.stderr.write(
+      `Port ${env.PORT} is already in use. Stop the other process or set PORT to something else.\n`,
+    );
+  } else {
+    process.stderr.write(`Server error: ${error.message}\n`);
+  }
+  process.exit(1);
+});
+
 // Serve the built web app when it exists, so one URL is enough.
 const webDist = path.join(repoRoot, "apps", "web", "dist");
 if (existsSync(webDist)) {
@@ -376,6 +387,10 @@ if (existsSync(webDist)) {
 }
 
 const wss = new WebSocketServer({ server, path: "/ws" });
+
+wss.on("error", (error: Error) => {
+  process.stderr.write(`WebSocket server error: ${error.message}\n`);
+});
 
 wss.on("connection", (socket, request) => {
   const url = new URL(request.url ?? "/ws", `http://${env.HOST}:${env.PORT}`);
