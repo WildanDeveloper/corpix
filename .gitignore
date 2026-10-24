@@ -22,3 +22,4 @@ id_rsa*
 .vscode/
 *.log
 dist/
+.build-test-dist/

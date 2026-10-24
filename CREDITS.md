@@ -7,6 +7,14 @@ design (`docs/DESIGN.md`).
 
 ## Art
 
-No art assets are bundled yet. When sprites or tilesets are added, record the
-pack name, source URL and licence here. Kenney packs are mostly CC0; itch.io
-packs vary, so check each one.
+**No third-party art is bundled.** Every character, desk, prop and tile in the
+office is drawn programmatically at runtime:
+
+- `apps/web/src/office/sprites.ts` generates 12x16 character frames into an RGBA
+  buffer, with a palette per role.
+- `apps/web/src/office/scene.ts` draws floors, walls, desks, plants, racks and the
+  coffee machine with PixiJS `Graphics`.
+
+That keeps the repository free of licensed assets and makes recolouring a role a
+one-line change. If you replace the generated art with a spritesheet, record the
+pack name, source URL and licence here.

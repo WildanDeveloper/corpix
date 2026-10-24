@@ -7,6 +7,10 @@ settings:
 importers:
 
   .:
+    dependencies:
+      better-sqlite3:
+        specifier: ^11.7.0
+        version: 11.10.0
     devDependencies:
       '@types/better-sqlite3':
         specifier: ^7.6.12
@@ -20,6 +24,9 @@ importers:
       '@types/ws':
         specifier: ^8.5.13
         version: 8.18.2
+      esbuild:
+        specifier: ^0.25.0
+        version: 0.25.12
       tsx:
         specifier: ^4.19.2
         version: 4.23.15

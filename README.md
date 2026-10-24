@@ -53,14 +53,18 @@ place. See [`docs/DESIGN.md`](./docs/DESIGN.md) for the full target design.
   sandbox degrades to policy-and-jail with a visible warning.
 - **Safety primitives** — workspace jail (`realpath` + trailing separator),
   protected files, write scopes, command policy, scrubbed child environment.
-- **CLI** — `run`, `runs`, `replay`, `team`, `settings`, `pricing`, `migrate`.
+- **CLI** — `run`, `runs`, `replay`, `resume`, `team`, `settings`, `pricing`,
+  `sandbox`, `migrate`.
+- **Production build** — `pnpm build` produces self-contained `dist/server.mjs`
+  and `dist/cli.mjs`; a non-root Dockerfile and compose file ship alongside.
 - **HTTP/WS server** — health, projects, runs, events, approvals, usage,
   settings, models and a WebSocket event stream with `?since=` reconnect.
-- **180 tests** covering the jail, glob matching, command policy, plan
+- **183 tests** covering the jail, glob matching, command policy, plan
   validation, budget maths, provider mapping, settings precedence, git
-  isolation and merges, cancellation, and an end-to-end mock run.
+  isolation and merges, cancellation, office layout and pathfinding, the
+  production bundles, and an end-to-end mock run.
 
-Not implemented yet: a production packaging step and meetings.
+Not implemented yet: meetings with minutes, and MCP tool support.
 
 ## Quick start
 
@@ -95,7 +99,32 @@ pnpm cli run "Add a /health endpoint" \
 `auto-safe` allows allowlisted test/lint/build commands, `auto` approves
 everything except hard denials.
 
-### Server and web UI
+### Production build
+
+```bash
+pnpm build            # typecheck + web build + dist/server.mjs + dist/cli.mjs
+pnpm start            # node dist/server.mjs, serves the built UI on :3001
+node dist/cli.mjs team
+```
+
+The server and CLI are bundled by esbuild, so the only runtime dependency is the
+native `better-sqlite3` module (everything else is inlined). `dist/` is
+self-contained apart from `node_modules` and the `config/` directory.
+
+### Docker
+
+```bash
+cp .env.example .env          # or leave LLM_PROVIDER=mock
+docker compose up -d --build
+# http://127.0.0.1:3001
+```
+
+The image runs as a non-root user (`uid 10001`), keeps `/data` (SQLite, secrets)
+and `/workspaces` as volumes, and ships a healthcheck. `SANDBOX=bwrap` needs
+extra privileges inside a container; the compose file defaults to `none` and
+documents the flags if you want to enable it.
+
+
 
 ```bash
 pnpm dev            # API on :3001, Vite UI on :5173

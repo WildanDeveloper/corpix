@@ -16,11 +16,13 @@
     "dev:demo": "LLM_PROVIDER=mock pnpm dev",
     "cli": "tsx apps/cli/src/index.ts",
     "db:migrate": "tsx apps/cli/src/migrate.ts",
-    "build": "pnpm typecheck && pnpm --filter @corpix/web build",
+    "build": "node scripts/build.mjs && pnpm --filter @corpix/web build",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p apps/web/tsconfig.json --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "lint": "echo 'eslint config lands with the web app (Phase 1)' && exit 0"
+    "lint": "echo 'eslint config lands with the web app (Phase 1)' && exit 0",
+    "start": "node dist/server.mjs",
+    "cli:prod": "node dist/cli.mjs"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.12",
@@ -29,6 +31,13 @@
     "@types/ws": "^8.5.13",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2",
-    "vitest": "^2.1.8"
+    "vitest": "^2.1.8",
+    "esbuild": "^0.25.0"
+  },
+  "bin": {
+    "corpix": "dist/cli.mjs"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.7.0"
   }
 }

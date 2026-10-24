@@ -1,0 +1,26 @@
+services:
+  corpix:
+    build: .
+    image: corpix:local
+    ports:
+      - "127.0.0.1:3001:3001"
+    environment:
+      # Set these in .env or here. Without a key, use LLM_PROVIDER=mock.
+      LLM_PROVIDER: ${LLM_PROVIDER:-mock}
+      LLM_BASE_URL: ${LLM_BASE_URL:-http://127.0.0.1:11434/v1}
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      BOSS_MODEL: ${BOSS_MODEL:-boss-model}
+      WORKER_MODEL: ${WORKER_MODEL:-worker-model}
+      CHEAP_MODEL: ${CHEAP_MODEL:-cheap-model}
+      # Inside a container bwrap needs extra privileges; none is the safe default.
+      SANDBOX: ${SANDBOX:-none}
+      ADMIN_TOKEN: ${ADMIN_TOKEN:-}
+    volumes:
+      - ./data:/data
+      - ./workspaces:/workspaces
+    restart: unless-stopped
+    # Uncomment only if you understand the trade-off: this lets the container
+    # create user namespaces so SANDBOX=bwrap works, at the cost of isolation
+    # from the host kernel.
+    # security_opt: ["seccomp=unconfined"]
+    # cap_add: ["SYS_ADMIN"]
