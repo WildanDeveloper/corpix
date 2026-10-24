@@ -1,0 +1,13 @@
+# USD per million tokens. Fill these in from your provider's pricing page.
+# Unknown models cost 0, so budget caps only work once these are set.
+your-strongest-model-id:
+  input: 0
+  output: 0
+  cached_input: 0
+your-balanced-model-id:
+  input: 0
+  output: 0
+  cached_input: 0
+your-cheap-model-id:
+  input: 0
+  output: 0

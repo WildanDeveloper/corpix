@@ -1,0 +1,12 @@
+name: Default software team
+boss:
+  role: boss
+  name: Ada
+workers:
+  - { role: frontend, name: Fiona }
+  - { role: backend,  name: Bruno }
+  - { role: devops,   name: Dev }
+  - { role: qa,       name: Quinn }
+limits:
+  maxConcurrentAgents: 3
+  reviewRounds: 2

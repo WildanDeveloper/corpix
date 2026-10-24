@@ -1,0 +1,23 @@
+node_modules/
+dist/
+coverage/
+
+# Runtime data
+data/
+workspaces/
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+
+# Secrets
+.env
+.env.*
+!.env.example
+*.pem
+id_rsa*
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+*.log

@@ -1,0 +1,16 @@
+{
+  "name": "@corpix/server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "dependencies": {
+    "@corpix/agents": "workspace:*",
+    "@corpix/shared": "workspace:*",
+    "better-sqlite3": "^11.7.0",
+    "dotenv": "^16.4.7",
+    "express": "^5.0.1",
+    "ws": "^8.18.0",
+    "yaml": "^2.6.1"
+  }
+}
