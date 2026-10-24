@@ -37,7 +37,7 @@ design lives in [`docs/DESIGN.md`](./docs/DESIGN.md).
 - **CLI** — `run`, `runs`, `replay`, `team`, `settings`, `pricing`, `migrate`.
 - **HTTP/WS server** — health, projects, runs, events, approvals, usage,
   settings, models and a WebSocket event stream with `?since=` reconnect.
-- **133 tests** covering the jail, glob matching, command policy, plan
+- **134 tests** covering the jail, glob matching, command policy, plan
   validation, budget maths, provider mapping, settings precedence, git
   isolation and merges, cancellation, and an end-to-end mock run.
 
