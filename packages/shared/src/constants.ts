@@ -52,6 +52,6 @@ export const DEFAULT_LIMITS = {
   toolOutputMaxChars: 8000,
   budgetUsdPerGoal: 5,
   reviewRounds: 2,
-  planAttempts: 2,
+  planAttempts: 3,
   maxOutputTokens: 4096,
 } as const;

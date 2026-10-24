@@ -195,3 +195,26 @@ describe("GitWorkspace", () => {
     expect(await workspace.isClean()).toBe(false);
   });
 });
+
+describe("commit hygiene", () => {
+  it("never commits node_modules", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "corpix-git-"));
+    await git(dir, ["init", "-q"]);
+    await git(dir, ["config", "user.email", "t@t"]);
+    await git(dir, ["config", "user.name", "t"]);
+    await fs.writeFile(path.join(dir, "README.md"), "test\n");
+    await git(dir, ["add", "README.md"]);
+    await git(dir, ["commit", "-qm", "init"]);
+    await fs.mkdir(path.join(dir, "node_modules", "left-pad"), { recursive: true });
+    await fs.writeFile(path.join(dir, "node_modules", "left-pad", "index.js"), "module.exports=1\n");
+    await fs.writeFile(path.join(dir, "app.js"), "console.log(1)\n");
+
+    const workspace = await GitWorkspace.open(dir);
+    const commit = await workspace.commitAll(dir, "test: keep node_modules out");
+    expect(commit.committed).toBe(true);
+    const tracked = await git(dir, ["ls-files"]);
+    expect(tracked).not.toContain("node_modules");
+    expect(tracked).toContain("app.js");
+    await fs.rm(dir, { recursive: true, force: true });
+  });
+});

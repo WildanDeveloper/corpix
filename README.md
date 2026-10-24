@@ -179,6 +179,58 @@ and apply to the next run immediately.
 REST endpoints match the target design; the WebSocket is at
 `ws://127.0.0.1:3080/ws?runId=<id>&since=<seq>`.
 
+## Ask for a website
+
+Point Corpix at a repository, give it a goal, and the team builds it. Nothing is
+magic: the Boss reads the repo, writes `SPEC.md`, then hands real tasks to the
+workers, each in its own branch.
+
+```bash
+# 1. a git repo to work in (empty is fine)
+mkdir -p ~/sites/kopi && cd ~/sites/kopi && git init && git commit --allow-empty -m init
+
+# 2. register it and dispatch
+curl -X POST http://127.0.0.1:3080/api/projects \
+  -H 'content-type: application/json' \
+  -d '{"name":"Kopi Senja","repoPath":"/root/sites/kopi"}'
+
+curl -X POST http://127.0.0.1:3080/api/runs \
+  -H 'content-type: application/json' \
+  -d '{"projectId":"prj_...","goal":"Build a responsive landing page for a coffee shop called Kopi Senja in apps/web: index.html and styles.css with a hero, menu and opening hours. No build step, no dependencies."}'
+```
+
+The same thing from the UI: paste the goal in the box, press **Dispatch**, and
+watch the office. When the run finishes:
+
+```bash
+cd ~/sites/kopi
+git log --oneline integration          # one commit per task, merged in order
+git diff main integration              # everything the team built
+git merge integration                  # take it
+```
+
+What actually happened on the run that produced the screenshot below:
+
+| Step | Who | Result |
+|---|---|---|
+| 1 | Boss | listed the repo, read `README.md` and the stub page, wrote `SPEC.md` |
+| 2 | Boss | submitted 3 tasks: frontend markup + CSS, QA tests, docs |
+| 3 | Frontend | wrote `apps/web/index.html` (74 lines) and `styles.css` (304 lines) |
+| 4 | QA | wrote `tests/landing.test.mjs`, a zero-dependency `node:test` suite |
+| 5 | QA | merged its branch; the landing page landed on `integration` |
+
+![A landing page the team generated](docs/screenshots/generated-site.png)
+
+Two things worth knowing:
+
+- **A task that hits the step limit still keeps its branch.** The work is not
+  thrown away; you can `git show agent/frontend/<task>` and merge by hand. The
+  run summary says exactly which task failed and why.
+- **Agents cannot install dependencies.** `npm install`, `pnpm add` and a bare
+  `npx <tool>` are denied by policy, and `node_modules` is excluded from commits.
+  A generated site is therefore dependency-free by construction, which is also
+  why it runs by opening the file.
+
 ## Settings (no restart, not hardcoded)
 
 Everything an operator usually edits lives in SQLite and is editable from the

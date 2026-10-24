@@ -817,6 +817,8 @@ export class Orchestrator {
           ),
           "",
           "Write SPEC.md and NOTES.md, then call submit_plan.",
+          "Every task must name a real, verifiable piece of work: a title a stranger understands, instructions that say what to build and in which files, and acceptance criteria a reviewer can check.",
+          "Never use placeholder text (placeholder, TBD, todo, x, example). A plan made of those is rejected and costs another attempt.",
           "Assign each task to a role that is allowed to write the files it needs.",
           "If the goal needs a file outside every scope, say so in the plan summary instead of assigning an impossible task.",
           lastErrors.length > 0
@@ -835,10 +837,22 @@ export class Orchestrator {
         "planning",
         attempt > 1
           ? { name: "submit_plan" }
-          : (step: number) => (step >= 3 ? { name: "submit_plan" } : undefined),
+          : // Give the Boss room to read the repo and write SPEC.md before
+            // forcing the tool. Forcing at step 3 produced "probe" plans.
+            (step: number) => (step >= 7 ? { name: "submit_plan" } : undefined),
       );
       if (result.status !== "plan" || !result.plan) {
-        lastErrors = ["submit_plan was not called with a valid plan object"];
+        lastErrors = [
+          "submit_plan was not called with a valid plan: every task needs a real title, instructions and acceptance criteria",
+        ];
+        this.emit({
+          type: "error",
+          payload: {
+            message: `Plan rejected: ${lastErrors[0]}`,
+            code: "plan_invalid",
+            agentId,
+          },
+        });
         continue;
       }
 
@@ -1293,6 +1307,8 @@ export class Orchestrator {
     try {
       result = await this.runAgentWithTimeout(agent, brief, runId, task.id, undefined, worktree);
     } catch (error) {
+      // Cancellation and budget limits must stop the run, not become a report.
+      if (error instanceof CancelledError || error instanceof BudgetExceededError) throw error;
       // A crashed or timed-out agent still produced knowledge. Turn it into an
       // honest failed report so the task is recorded and the session learns.
       const message = (error as Error).message;

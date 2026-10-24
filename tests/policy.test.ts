@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { checkCommand, scrubbedEnv } from "@corpix/agents";
 
-const allow = ["node", "pnpm", "npm", "git", "rm"];
+const allow = ["node", "pnpm", "npm", "git", "rm", "npx", "yarn"];
 
 describe("checkCommand", () => {
   it("allows allowlisted executables", () => {
@@ -34,10 +34,23 @@ describe("checkCommand", () => {
     expect(checkCommand("npm", ["login"], { allow }).allowed).toBe(false);
   });
 
-  it("marks installs as network risk", () => {
-    const decision = checkCommand("pnpm", ["add", "zod"], { allow });
+  it("denies dependency installs outright", () => {
+    for (const [command, args] of [
+      ["pnpm", ["add", "zod"]],
+      ["npm", ["install", "prettier"]],
+      ["npm", ["ci"]],
+      ["yarn", ["add", "left-pad"]],
+      ["npx", ["prettier", "--check", "index.html"]],
+    ] as const) {
+      const decision = checkCommand(command, [...args], { allow });
+      expect(decision.allowed).toBe(false);
+      expect(decision.reason).toMatch(/install|network|denied|allowlist/i);
+    }
+  });
+
+  it("still allows npx when it is told not to install", () => {
+    const decision = checkCommand("npx", ["--no-install", "tsc", "--noEmit"], { allow });
     expect(decision.allowed).toBe(true);
-    expect(decision.risk).toBe("network");
   });
 
   it("rejects absolute executable paths", () => {

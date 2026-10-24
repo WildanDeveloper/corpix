@@ -29,6 +29,13 @@ const DENIED_EXECUTABLES = new Set([
 
 const DENIED_GIT_SUBCOMMANDS = new Set(["push", "remote", "credential", "config"]);
 const DENIED_NPM_SUBCOMMANDS = new Set(["publish", "unpublish", "adduser", "login", "token"]);
+/**
+ * Dependency installation is hard-denied. An agent that runs `npm install
+ * prettier` mid-task burns its step budget on a formatter, commits node_modules
+ * into the repository, and can pull arbitrary code from the network. If a
+ * project needs its own dependencies, the operator installs them.
+ */
+const INSTALL_SUBCOMMANDS = new Set(["install", "i", "add", "ci", "dlx", "exec"]);
 const NETWORK_SUBCOMMANDS = new Set([
   "install",
   "i",
@@ -101,6 +108,22 @@ export function checkCommand(
   }
   if (["npm", "pnpm", "yarn", "bun"].includes(executable) && DENIED_NPM_SUBCOMMANDS.has(sub)) {
     return { allowed: false, risk: "network", reason: `${executable} ${sub} is hard-denied` };
+  }
+  if (["npm", "pnpm", "yarn", "bun"].includes(executable) && INSTALL_SUBCOMMANDS.has(sub)) {
+    return {
+      allowed: false,
+      risk: "network",
+      reason:
+        `${executable} ${sub} is denied: agents must not install dependencies. ` +
+        "Use what the workspace already provides and report what is missing.",
+    };
+  }
+  if (executable === "npx" && !args.includes("--no-install") && !args.includes("--offline")) {
+    return {
+      allowed: false,
+      risk: "network",
+      reason: "npx is denied unless it is run with --no-install (no fetching from the network)",
+    };
   }
   if (executable === "rm") {
     const recursive = args.some((a) => /^-[a-z]*r/i.test(a) || /^-[a-z]*R/.test(a));

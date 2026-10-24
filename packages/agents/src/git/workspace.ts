@@ -163,7 +163,17 @@ export class GitWorkspace {
 
   /** Commit everything the agent produced, so the branch is mergeable. */
   async commitAll(worktreePath: string, message: string): Promise<{ committed: boolean; sha?: string }> {
-    await this.gitIn(worktreePath, ["add", "-A"]);
+    // Never commit installed dependencies: they are large, unreviewable, and an
+    // agent that ran an install by mistake should not push node_modules into the
+    // integration branch.
+    await this.gitIn(worktreePath, [
+      "add",
+      "-A",
+      "--",
+      ".",
+      ":(exclude)node_modules",
+      ":(exclude)**/node_modules",
+    ]);
     const staged = await this.gitIn(worktreePath, ["status", "--porcelain"]);
     if (staged.stdout.trim().length === 0) return { committed: false };
     await this.gitIn(worktreePath, [

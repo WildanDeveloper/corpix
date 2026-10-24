@@ -1,12 +1,21 @@
 import { z } from "zod";
 
 export const PlanTaskSchema = z.object({
-  id: z.string().min(1),
+  id: z.string().min(1).describe("short slug, e.g. api or landing-page"),
   role: z.string().min(1),
-  title: z.string().min(1),
-  instructions: z.string().min(1),
+  title: z
+    .string()
+    .min(1)
+    .describe("what gets built, e.g. 'Responsive landing page with a menu section'"),
+  instructions: z
+    .string()
+    .min(1)
+    .describe("what to do and which files to touch; never 'placeholder', 'TBD' or 'x'"),
   dependsOn: z.array(z.string()).default([]),
-  acceptanceCriteria: z.array(z.string().min(1)).min(1),
+  acceptanceCriteria: z
+    .array(z.string().min(1))
+    .min(1)
+    .describe("how a reviewer can verify it, e.g. 'Opening the page shows the menu prices'"),
 });
 
 export const PlanSchema = z.object({
@@ -33,6 +42,41 @@ export function makePlanSchema(roleIds: readonly string[]) {
   });
 }
 
+/**
+ * Words a model emits when it is filling a schema instead of doing the work:
+ * "placeholder", "TBD", "todo", "example task". A plan made of these is not a
+ * plan, and letting it through wastes an entire run.
+ */
+const PLACEHOLDER_WORDS = [
+  "placeholder",
+  "tbd",
+  "tba",
+  "todo",
+  "to do",
+  "fixme",
+  "xxx",
+  "lorem ipsum",
+  "example task",
+  "sample task",
+  "task 1",
+  "untitled",
+  "probe",
+  "test",
+  "check",
+  "n a",
+];
+
+/** True when the text is only a placeholder or has no substance. */
+export function isPlaceholder(text: string): boolean {
+  const value = text.trim().toLowerCase().replace(/[.!?\s]+$/g, "");
+  if (value.length === 0) return true;
+  if (PLACEHOLDER_WORDS.includes(value)) return true;
+  // "placeholder 1", "<placeholder>", "[TODO]"
+  const stripped = value.replace(/[^a-z0-9 ]/g, "").trim();
+  if (PLACEHOLDER_WORDS.some((word) => stripped === word || stripped === `${word} 1`)) return true;
+  return false;
+}
+
 export interface PlanValidationResult {
   ok: boolean;
   errors: string[];
@@ -57,6 +101,12 @@ export function validatePlan(
     errors.push(`Plan has ${plan.tasks.length} tasks, the limit is ${options.maxTasks}`);
   }
 
+  if (isPlaceholder(plan.summary)) {
+    errors.push(
+      `The plan summary is a placeholder ("${plan.summary.slice(0, 40)}"); write what the team will actually build`,
+    );
+  }
+
   for (const task of plan.tasks) {
     if (ids.has(task.id)) errors.push(`Duplicate task id: ${task.id}`);
     ids.add(task.id);
@@ -65,6 +115,23 @@ export function validatePlan(
     }
     if (task.dependsOn.includes(task.id)) {
       errors.push(`Task ${task.id} depends on itself`);
+    }
+    // A plan full of placeholders passes the schema and fails the work. Reject
+    // it here so the Boss gets one more attempt instead of the team wasting a run.
+    if (isPlaceholder(task.id)) {
+      errors.push(`Task id "${task.id}" is a placeholder; use a short slug like "api"`);
+    }
+    if (isPlaceholder(task.title) || task.title.trim().length < 2) {
+      errors.push(`Task ${task.id} has a placeholder title ("${task.title.slice(0, 40)}")`);
+    }
+    const instructionWords = task.instructions.trim().split(/\s+/).filter(Boolean);
+    if (isPlaceholder(task.instructions) || task.instructions.trim().length < 5 || instructionWords.length < 2) {
+      errors.push(
+        `Task ${task.id} has no real instructions; say what to build and where (at least a sentence)`,
+      );
+    }
+    if (task.acceptanceCriteria.every((criterion) => isPlaceholder(criterion))) {
+      errors.push(`Task ${task.id} has only placeholder acceptance criteria`);
     }
   }
 
