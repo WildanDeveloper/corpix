@@ -330,6 +330,25 @@ function OfficePanel(): ReactElement {
               </option>
             ))}
           </select>
+          {projectId && (
+            <button
+              title={t("Delete this project and its runs")}
+              onClick={() => {
+                const name = projects.find((project) => project.id === projectId)?.name ?? projectId;
+                if (!window.confirm(t("Delete {name} and all of its runs?", { name }))) return;
+                void api(`/api/projects/${projectId}`, { method: "DELETE" })
+                  .then(() => {
+                    setProjectId("");
+                    setRunId(null);
+                    setEvents([]);
+                    return refresh();
+                  })
+                  .catch((err: Error) => setError(err.message));
+              }}
+            >
+              {t("Delete")}
+            </button>
+          )}
           <input
             value={goal}
             placeholder={t("Build a todo app with email login")}

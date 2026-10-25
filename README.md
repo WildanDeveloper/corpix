@@ -195,6 +195,11 @@ CORPIX_DATA_DIR=/srv/corpix pnpm serve
 The server also prints a warning at startup if `DATA_DIR` resolves under `/tmp`
 or `/var/tmp`. `scripts/serve.sh` refuses to start there at all.
 
+Projects can be removed with `DELETE /api/projects/:id`, which deletes the
+project, its runs, tasks, events, approvals and agent sessions in one
+transaction. The Office panel has a **Delete** button next to the project picker
+for the same thing.
+
 ## Ask for a website
 
 Point Corpix at a repository, give it a goal, and the team builds it. Nothing is

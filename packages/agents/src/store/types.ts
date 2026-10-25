@@ -116,6 +116,7 @@ export interface Store {
   createProject(project: ProjectRecord): void;
   getProject(id: string): ProjectRecord | null;
   listProjects(): ProjectRecord[];
+  deleteProject(id: string): void;
 
   createRun(run: RunRecord): void;
   updateRun(id: string, patch: Partial<RunRecord>): void;
@@ -178,6 +179,24 @@ export class MemoryStore implements Store {
 
   listProjects(): ProjectRecord[] {
     return [...this.projects.values()];
+  }
+
+  deleteProject(id: string): void {
+    this.projects.delete(id);
+    for (const run of [...this.runs.values()]) {
+      if (run.projectId !== id) continue;
+      this.runs.delete(run.id);
+      this.events.delete(run.id);
+      for (const task of [...this.tasks.values()]) {
+        if (task.runId === run.id) this.tasks.delete(task.id);
+      }
+      for (const agent of [...this.agents.values()]) {
+        if (agent.runId === run.id) this.agents.delete(agent.id);
+      }
+      for (const [key, session] of [...this.sessions]) {
+        if (session.runId === run.id) this.sessions.delete(key);
+      }
+    }
   }
 
   createRun(run: RunRecord): void {

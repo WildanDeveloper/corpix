@@ -330,6 +330,30 @@ export class SqliteStore implements Store {
     }));
   }
 
+  /**
+   * Delete a project and everything that belongs to it. The office shows one
+   * project at a time, so removing a demo project should not leave orphan runs.
+   */
+  deleteProject(id: string): void {
+    const runIds = (this.db.prepare("SELECT id FROM runs WHERE project_id = ?").all(id) as Array<{
+      id: string;
+    }>).map((row) => row.id);
+    const tx = this.db.transaction(() => {
+      for (const runId of runIds) {
+        this.db.prepare("DELETE FROM messages WHERE task_id IN (SELECT id FROM tasks WHERE run_id = ?)").run(runId);
+        this.db.prepare("DELETE FROM agent_sessions WHERE run_id = ?").run(runId);
+        this.db.prepare("DELETE FROM usage WHERE run_id = ?").run(runId);
+        this.db.prepare("DELETE FROM approvals WHERE run_id = ?").run(runId);
+        this.db.prepare("DELETE FROM events WHERE run_id = ?").run(runId);
+        this.db.prepare("DELETE FROM agents WHERE run_id = ?").run(runId);
+        this.db.prepare("DELETE FROM tasks WHERE run_id = ?").run(runId);
+      }
+      this.db.prepare("DELETE FROM runs WHERE project_id = ?").run(id);
+      this.db.prepare("DELETE FROM projects WHERE id = ?").run(id);
+    });
+    tx();
+  }
+
   // --- agent sessions -------------------------------------------------------
   readAgentSession(runId: string, role: string): import("@corpix/agents").AgentSessionRecord | null {
     const row = this.db

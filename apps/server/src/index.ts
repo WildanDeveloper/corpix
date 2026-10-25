@@ -266,6 +266,24 @@ app.get("/api/projects", (_req, res) => {
   res.json(store.listProjects());
 });
 
+app.delete("/api/projects/:id", (req, res) => {
+  const project = store.getProject(req.params.id);
+  if (!project) {
+    res.status(404).json({ error: `Unknown project: ${req.params.id}` });
+    return;
+  }
+  if ([...active.values()].some((record) => record.status === "running")) {
+    const busy = [...active.values()].some((record) => record.status === "running");
+    if (busy) {
+      res.status(409).json({ error: "A run is active. Cancel it before deleting a project." });
+      return;
+    }
+  }
+  store.deleteProject(project.id);
+  mind.invalidateRoster();
+  res.json({ deleted: project.id });
+});
+
 app.post("/api/projects", (req, res) => {
   const { name, repoPath } = req.body as { name?: string; repoPath?: string };
   if (!name || !repoPath) {
