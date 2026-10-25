@@ -18,6 +18,7 @@ import { MindService } from "./mind-service";
 import {
   assertSafeBinding,
   findRepoRoot,
+  isTemporaryDir,
   maskSettings,
   mergeSettings,
   newProjectId,
@@ -48,6 +49,16 @@ assertSafeBinding(env);
 
 const configDir = path.join(repoRoot, "config");
 const dataDir = resolveDataDir(env.DATA_DIR, repoRoot);
+
+// A data directory under /tmp is erased by the OS on reboot, taking projects,
+// runs, settings, the API key and every agent's memory with it. Say so loudly
+// once, and keep going, because a throwaway sandbox is a legitimate use.
+if (isTemporaryDir(dataDir)) {
+  process.stderr.write(
+    `WARNING: DATA_DIR is ${dataDir}, which the OS may delete. ` +
+      "Point DATA_DIR at a permanent path to keep projects, settings and memories.\n",
+  );
+}
 const store = new SqliteStore(
   openMigrated(path.join(dataDir, "corpix.sqlite")),
   path.join(dataDir, "secrets.json"),

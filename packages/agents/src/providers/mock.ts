@@ -220,9 +220,32 @@ function mockMind(prompt: string, turn: number): Record<string, unknown> {
   const role = detectRole(prompt);
   const seed = hash(`${name}:${role}:${turn}`);
   const replying = prompt.includes("They just spoke to you.") || prompt.includes("You started this conversation.");
+  const indonesian = prompt.includes("Speak Bahasa Indonesia");
   const transcript = [...prompt.matchAll(/^(?:you|([A-Z][\w .-]+)): (.+)$/gm)];
   const last = transcript.at(-1);
   const lastText = last?.[2] ?? "";
+
+  if (replying && indonesian) {
+    const balasan = [
+      "Boleh, tapi bagian retry-nya masih bikin saya ragu.",
+      "Hm. Saya lihat beda, tapi lanjut.",
+      "Itu poin bagus. Saya cek lagi deh.",
+      "Saya lagi nggak mood debat soal penamaan sekarang.",
+      "Itu jalur bahagia. Kalau gagalnya gimana?",
+      "Oke, itu lucu. Ya sudah, kamu menang.",
+      "Saya capek. Bisa nanti setelah kopi?",
+    ];
+    return {
+      thought: `Dia bilang: ${lastText.slice(0, 80)}`,
+      say: balasan[seed % balasan.length],
+      mood: {
+        valence: ((seed % 7) - 3) / 6,
+        arousal: ((seed % 5) - 2) / 4,
+        label: pick(["tertarik", "kesal", "geli", "lelah", "keras kepala"], seed),
+      },
+      opinion: { sentiment: ((seed % 5) - 2) / 8, note: pick(["layak didengar", "gampang defensif", "tajam", "akhir-akhir ini linglung"], seed) },
+    };
+  }
 
   if (replying) {
     const reactions = [
@@ -258,6 +281,49 @@ function mockMind(prompt: string, turn: number): Record<string, unknown> {
     : action === "wander" ? "wander"
     : "desk";
   const colleague = /- ([\w .-]+) \([\w-]+, id ([\w-]+)\)/.exec(prompt);
+  if (indonesian) {
+    const kerja = [
+      "",
+      "Saya butuh kopi dulu sebelum lihat itu lagi.",
+      "Siapa yang ngutak-atik script deploy?",
+      "Ini bakal jadi masalah nanti.",
+      "Akhirnya ada yang jalan.",
+      "Sudah sepuluh menit saya menatap baris yang sama.",
+    ];
+    const label: Record<string, string> = {
+      coffee: "ambil kopi",
+      smoke: "istirahat merokok",
+      whiteboard: "di papan tulis",
+      window: "menatap ke jendela",
+      wander: "jalan sebentar",
+      talk: "mencari orang",
+    };
+    return {
+      thought: pick([
+        "Saya harus cek diff-nya sebelum orang lain.",
+        "Kalau saya kerjakan diam-diam, nggak ada yang sadar.",
+        "Saya nggak dibayar untuk debug YAML hari ini.",
+        "Sebenarnya istirahat sebentar bakal membantu.",
+      ], seed),
+      action,
+      place,
+      target: action === "talk" && colleague ? colleague[2] : undefined,
+      label: (label as Record<string, string>)[String(action)] ?? "di meja",
+      say: kerja[seed % kerja.length],
+      seconds: 8 + (seed % 12),
+      mood: {
+        valence: ((seed % 9) - 4) / 8,
+        arousal: ((seed % 5) - 2) / 4,
+        label: pick(["fokus", "gelisah", "kesal", "tenang", "penasaran", "lelah"], seed),
+      },
+      remember: pick([
+        "Build-nya hijau, untuk sekali ini.",
+        "Seseorang memindahkan kursi saya.",
+        "Saya masih utang review.",
+      ], seed),
+    };
+  }
+
   const sayPool = [
     "",
     "I need caffeine before I look at that again.",

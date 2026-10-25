@@ -23,3 +23,12 @@ export function repoPath(...segments: string[]): string {
 export function resolveDataDir(dataDir: string, root: string = findRepoRoot()): string {
   return path.isAbsolute(dataDir) ? dataDir : path.resolve(root, dataDir);
 }
+
+/**
+ * True when a path lives in a temporary directory. The OS wipes those on
+ * reboot, so a database there loses projects, runs, settings and API keys.
+ */
+export function isTemporaryDir(target: string): boolean {
+  const normalised = path.resolve(target);
+  return /^\/(tmp|var\/tmp)(\/|$)/.test(normalised);
+}

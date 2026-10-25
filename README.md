@@ -181,6 +181,20 @@ and apply to the next run immediately.
 REST endpoints match the target design; the WebSocket is at
 `ws://127.0.0.1:3080/ws?runId=<id>&since=<seq>`.
 
+### Where the data lives
+
+`DATA_DIR` holds the SQLite database, `secrets.json` (the API key), `minds.json`
+(every agent's memory) and the admin token. **It must be a permanent path.**
+`/tmp` is cleared by the OS on reboot and takes all of it with it.
+
+```bash
+pnpm serve                     # DATA_DIR=./data, refuses /tmp, port 3080
+CORPIX_DATA_DIR=/srv/corpix pnpm serve
+```
+
+The server also prints a warning at startup if `DATA_DIR` resolves under `/tmp`
+or `/var/tmp`. `scripts/serve.sh` refuses to start there at all.
+
 ## Ask for a website
 
 Point Corpix at a repository, give it a goal, and the team builds it. Nothing is

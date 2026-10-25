@@ -23,3 +23,19 @@ describe("repo paths", () => {
     );
   });
 });
+
+describe("temporary data directories", () => {
+  it("spots /tmp and /var/tmp", async () => {
+    const { isTemporaryDir } = await import("@corpix/shared");
+    expect(isTemporaryDir("/tmp/corpix")).toBe(true);
+    expect(isTemporaryDir("/var/tmp/corpix")).toBe(true);
+    expect(isTemporaryDir("/tmp")).toBe(true);
+  });
+
+  it("accepts permanent paths", async () => {
+    const { isTemporaryDir } = await import("@corpix/shared");
+    expect(isTemporaryDir("/root/corpix/data")).toBe(false);
+    expect(isTemporaryDir("/var/lib/corpix")).toBe(false);
+    expect(isTemporaryDir("/home/me/tmp-data")).toBe(false);
+  });
+});
